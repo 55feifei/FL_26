@@ -1,0 +1,9 @@
+# 树莓派（客户端边缘节点）依赖。
+# 注意：armv7l(32位) 上 torch / torchvision 没有官方包，
+#       请用 scripts/setup_pi.sh 安装，不要直接 pip install -r 本文件装 torch。
+# 本文件仅列纯 Python 依赖：
+numpy
+requests
+pillow
+# torch         <- 由 scripts/setup_pi.sh 处理（armv7l 专用 wheel）
+# torchvision   <- 由 scripts/setup_pi.sh 处理

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分布式联邦学习 · 实时监控看板</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #0f1729; color: #e6edf3; padding: 24px; }
+  h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+  .sub { color: #8b9bb4; font-size: 13px; margin-bottom: 20px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 22px; }
+  .card { background: #16203a; border: 1px solid #243352; border-radius: 10px; padding: 16px 20px; min-width: 150px; }
+  .card .label { color: #8b9bb4; font-size: 12px; margin-bottom: 6px; }
+  .card .value { font-size: 26px; font-weight: 700; }
+  .card .value.small { font-size: 18px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+  .badge.run { background: #1f6feb33; color: #58a6ff; }
+  .badge.done { background: #23863633; color: #3fb950; }
+  .charts { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 22px; }
+  .chartbox { background: #16203a; border: 1px solid #243352; border-radius: 10px; padding: 14px 16px; flex: 1; min-width: 360px; }
+  .chartbox h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #c8d3e6; }
+  canvas { width: 100%; height: 280px; display: block; }
+  table { width: 100%; border-collapse: collapse; background: #16203a; border: 1px solid #243352; border-radius: 10px; overflow: hidden; }
+  th, td { padding: 10px 14px; text-align: left; font-size: 13px; border-bottom: 1px solid #243352; }
+  th { background: #1b274a; color: #8b9bb4; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
+  .acc { color: #3fb950; } .loss { color: #ff7b72; }
+</style>
+</head>
+<body>
+  <h1>基于树莓派的分布式联邦学习系统 · 实时监控看板</h1>
+  <div class="sub">FedAvg 同步聚合 · 数据不出本地，仅上传模型参数 · 每 2 秒自动刷新</div>
+
+  <div class="cards">
+    <div class="card"><div class="label">训练状态</div><div class="value small"><span id="statusBadge" class="badge run">连接中…</span></div></div>
+    <div class="card"><div class="label">通信轮次</div><div class="value"><span id="roundNow">-</span><span style="color:#8b9bb4;font-size:16px"> / <span id="roundTotal">-</span></span></div></div>
+    <div class="card"><div class="label">全局准确率</div><div class="value acc"><span id="accNow">-</span></div></div>
+    <div class="card"><div class="label">全局损失</div><div class="value loss"><span id="lossNow">-</span></div></div>
+    <div class="card"><div class="label">模型 / 数据集</div><div class="value small"><span id="modelName">-</span> · <span id="datasetName">-</span></div></div>
+    <div class="card"><div class="label">客户端</div><div class="value"><span id="clientCount">0</span><span style="color:#8b9bb4;font-size:16px"> / <span id="clientTotal">-</span></span></div></div>
+  </div>
+
+  <div class="charts">
+    <div class="chartbox"><h3><span class="dot acc" style="background:#3fb950"></span>全局准确率 vs 通信轮次</h3><canvas id="accChart"></canvas></div>
+    <div class="chartbox"><h3><span class="dot loss" style="background:#ff7b72"></span>全局损失 vs 通信轮次</h3><canvas id="lossChart"></canvas></div>
+  </div>
+
+  <table>
+    <thead><tr><th>客户端 ID</th><th>最近上传轮次</th><th>本地样本数</th><th>最近活跃 (秒)</th></tr></thead>
+    <tbody id="clientRows"><tr><td colspan="4" style="color:#8b9bb4">等待客户端连接…</td></tr></tbody>
+  </table>
+
+<script>
+function drawChart(canvas, points, color, yMin, yMax) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const padL = 48, padR = 16, padT = 14, padB = 30;
+  const w = cssW - padL - padR, h = cssH - padT - padB;
+
+  // 坐标范围
+  let xs = points.map(p => p.x);
+  let xMin = points.length ? Math.min(...xs) : 0;
+  let xMax = points.length ? Math.max(...xs) : 1;
+  if (xMin === xMax) xMax = xMin + 1;
+  if (yMin === null) yMin = Math.min(...points.map(p => p.y), 0);
+  if (yMax === null) { yMax = Math.max(...points.map(p => p.y), 0.01); yMax *= 1.1; }
+  if (yMin === yMax) yMax = yMin + 1;
+
+  const X = x => padL + (x - xMin) / (xMax - xMin) * w;
+  const Y = y => padT + (1 - (y - yMin) / (yMax - yMin)) * h;
+
+  // 网格 + Y 轴刻度
+  ctx.strokeStyle = '#243352'; ctx.fillStyle = '#8b9bb4';
+  ctx.font = '11px Segoe UI'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const yy = padT + h * i / 4;
+    const val = yMax - (yMax - yMin) * i / 4;
+    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + w, yy); ctx.stroke();
+    ctx.fillText(val.toFixed(2), 6, yy + 3);
+  }
+  // X 轴刻度（最多 8 个整数轮次）
+  const span = xMax - xMin;
+  const step = Math.max(1, Math.ceil(span / 8));
+  for (let xv = Math.ceil(xMin); xv <= xMax; xv += step) {
+    ctx.fillText(String(xv), X(xv) - 4, padT + h + 18);
+  }
+
+  if (points.length === 0) return;
+  // 折线
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+  points.forEach((p, i) => { const px = X(p.x), py = Y(p.y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+  ctx.stroke();
+  // 数据点
+  ctx.fillStyle = color;
+  points.forEach(p => { ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 3, 0, Math.PI * 2); ctx.fill(); });
+}
+
+function render(d) {
+  const badge = document.getElementById('statusBadge');
+  if (d.done) { badge.textContent = '✓ 训练完成'; badge.className = 'badge done'; }
+  else { badge.textContent = '● 训练中'; badge.className = 'badge run'; }
+
+  document.getElementById('roundNow').textContent = d.done ? d.total_rounds : d.current_round;
+  document.getElementById('roundTotal').textContent = d.total_rounds;
+  document.getElementById('modelName').textContent = d.model;
+  document.getElementById('datasetName').textContent = d.dataset;
+  document.getElementById('clientTotal').textContent = d.num_clients;
+
+  const hist = d.history || [];
+  const last = hist.length ? hist[hist.length - 1] : null;
+  document.getElementById('accNow').textContent = last ? (last.accuracy * 100).toFixed(2) + '%' : '-';
+  document.getElementById('lossNow').textContent = last ? last.loss.toFixed(4) : '-';
+
+  drawChart(document.getElementById('accChart'),
+            hist.map(h => ({ x: h.round, y: h.accuracy })), '#3fb950', 0, 1);
+  drawChart(document.getElementById('lossChart'),
+            hist.map(h => ({ x: h.round, y: h.loss })), '#ff7b72', 0, null);
+
+  const clients = d.clients || {};
+  const ids = Object.keys(clients).sort();
+  document.getElementById('clientCount').textContent = ids.length;
+  const tbody = document.getElementById('clientRows');
+  if (ids.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#8b9bb4">等待客户端连接…</td></tr>';
+  } else {
+    tbody.innerHTML = ids.map(id => {
+      const c = clients[id];
+      return `<tr><td><span class="dot" style="background:#58a6ff"></span>client ${id}</td>`
+           + `<td>${c.last_round}</td><td>${c.num_samples}</td><td>${c.last_seen}</td></tr>`;
+    }).join('');
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/status', { cache: 'no-store' });
+    render(await r.json());
+  } catch (e) { /* 服务器暂未就绪，下次重试 */ }
+}
+poll();
+setInterval(poll, 2000);
+window.addEventListener('resize', poll);
+</script>
+</body>
+</html>

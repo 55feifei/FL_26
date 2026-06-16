@@ -1,0 +1,11 @@
+# PC（中心服务器 + 看板）依赖。x86 上 pip 直接安装即可。
+# 推荐在 Python 3.7 的 conda 环境内安装（与树莓派一致）：
+#   conda create -n FL python=3.7.3 -y
+#   conda activate FL
+#   pip install -r requirements-pc.txt
+torch
+torchvision
+flask
+numpy
+matplotlib
+requests
