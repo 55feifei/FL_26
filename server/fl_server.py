@@ -117,8 +117,14 @@ class FLServer:
 
             if received >= self.cfg.num_clients:
                 # 收齐 -> FedAvg 聚合 -> 评估 -> 进入下一轮
-                new_sd = fedavg(list(self.round_updates.values()))
-                self.model.load_state_dict(new_sd)
+                new_sd, dropped = fedavg(list(self.round_updates.values()))
+                if dropped:
+                    print(f"  [警告] 本轮剔除 {dropped} 个含 NaN/Inf 的客户端更新"
+                          f"（请检查该客户端树莓派的 PyTorch 是否产生 NaN）", flush=True)
+                if new_sd is None:
+                    print("  [警告] 本轮全部更新均为 NaN/Inf，保留上一轮全局模型不更新。", flush=True)
+                else:
+                    self.model.load_state_dict(new_sd)
                 self.round_updates = {}
                 acc, loss = self.evaluate()
                 self._record(self.current_round, acc, loss)

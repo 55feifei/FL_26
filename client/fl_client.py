@@ -15,6 +15,7 @@
 
 import os
 import sys
+import math
 import time
 import argparse
 
@@ -31,23 +32,33 @@ from common.serialize import state_dict_to_bytes, bytes_to_state_dict
 
 
 def local_train(model, loader, cfg, device):
-    """在本地数据上训练若干 epoch（或 local_steps 个 batch），返回 (最后loss, 步数)。"""
+    """在本地数据上训练若干 epoch（或 local_steps 个 batch）。
+
+    返回 (最后loss, 步数, finite)：finite 表示训练后模型参数是否仍为有限值。
+    若中途 loss 变成 NaN/Inf（常见于 armv7l 树莓派的非官方 torch 构建），立即中断。
+    加入梯度裁剪以抑制梯度爆炸导致的 NaN。
+    """
     model.train()
     optimizer = torch.optim.SGD(model.parameters(), lr=cfg.lr, momentum=cfg.momentum)
     criterion = torch.nn.CrossEntropyLoss()
-    steps, last_loss = 0, 0.0
+    steps, last_loss, finite = 0, 0.0, True
     for _ in range(cfg.local_epochs):
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             loss = criterion(model(x), y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)  # 抑制梯度爆炸
             optimizer.step()
             steps += 1
             last_loss = loss.item()
+            if not math.isfinite(last_loss):
+                print(f"    !! 第 {steps} 步 loss={last_loss}（NaN/Inf），中断本地训练", flush=True)
+                finite = False
+                return last_loss, steps, finite
             if cfg.local_steps and steps >= cfg.local_steps:
-                return last_loss, steps
-    return last_loss, steps
+                return last_loss, steps, finite
+    return last_loss, steps, finite
 
 
 def build_local_loader(cfg, client_id):
@@ -101,10 +112,15 @@ def run(args):
         # 2) 载入全局权重，在本地分片上训练
         model.load_state_dict(bytes_to_state_dict(resp.content))
         t0 = time.time()
-        loss, steps = local_train(model, loader, cfg, device)
+        loss, steps, finite = local_train(model, loader, cfg, device)
         dt = time.time() - t0
         print(f"[client {args.client_id}] 第 {rnd} 轮：本地训练 {steps} 步，"
               f"loss={loss:.4f}，用时 {dt:.1f}s", flush=True)
+        if not finite:
+            print(f"[client {args.client_id}] [警告] 本地训练产生 NaN/Inf！这通常是本机 PyTorch 构建问题，"
+                  f"请在树莓派上运行  python scripts/check_torch.py  自检"
+                  f"（可尝试 --model mlp 或设 torch 单线程）。", flush=True)
+            # 仍上传（服务器会剔除坏更新并保留旧模型），以免阻塞 barrier
 
         # 3) 上传本地模型参数
         body = state_dict_to_bytes(model.state_dict())

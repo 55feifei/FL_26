@@ -1,0 +1,48 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# ===== 数据集（体积大，从 PC scp 拷贝，不入库） =====
+data/
+!data/.gitkeep
+
+# ===== 训练产物 =====
+results/*.pth
+results/*.pt
+results/*.png
+results/*.csv
+results/*.log
+
+# ===== 日志/临时文件 =====
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+*.zip
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+*.iml
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Jupyter =====
+.ipynb_checkpoints/

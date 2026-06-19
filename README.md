@@ -65,10 +65,10 @@ fl/
 
 ## 3. 环境要求
 
-| 角色 | 设备 | 关键依赖 |
-|------|------|----------|
-| 中心服务器 + 看板 | PC（Windows/Linux/Mac） | Python 3.7、torch、torchvision、flask、numpy、matplotlib |
-| 客户端 ×2 | 树莓派 4B（armv7l 32 位） | Python 3.7、torch、torchvision、numpy、requests |
+| 角色              | 设备                      | 关键依赖                                                 |
+| ----------------- | ------------------------- | -------------------------------------------------------- |
+| 中心服务器 + 看板 | PC（Windows/Linux/Mac）   | Python 3.7、torch、torchvision、flask、numpy、matplotlib |
+| 客户端 ×2        | 树莓派 4B（armv7l 32 位） | Python 3.7、torch、torchvision、numpy、requests          |
 
 > 为与树莓派(Python 3.7)一致，PC 推荐用 conda 建 3.7 环境：
 > `conda create -n FL python=3.7.3 -y && conda activate FL`
@@ -112,12 +112,16 @@ python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1
    ```powershell
    netsh advfirewall firewall add rule name="FL-5000" dir=in action=allow protocol=TCP localport=5000
    ```
+
    （或首次运行时在弹窗里允许 Python 通过防火墙。）
 5. **启动服务器**：
    ```bash
    cd fl
-   python -m server.fl_server --num-clients 2 --rounds 15
+   python -m server.fl_server --num-clients 2 --rounds 15 --model cnn
    ```
+
+   > `--num-clients` 必须等于树莓派数量；`--model` 要和下面客户端填的完全一致。
+   >
 6. 浏览器打开 **http://127.0.0.1:5000/** 或 **http://<PC_IP>:5000/** 查看看板。
 
 ### 5.2 树莓派端（每台一个客户端）
@@ -139,14 +143,22 @@ python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1
    # 在 PC 上执行
    scp -r fl/data pi@<树莓派IP>:/home/pi/fl/
    ```
+
    或在树莓派上直接 `python3 scripts/prepare_data.py`（需联网）。
 4. **启动客户端**（两台树莓派分别用 id 0 / 1）：
    ```bash
    # 树莓派 #1
-   python3 -m client.fl_client --server http://<PC_IP>:5000 --client-id 0
+   python3 -m client.fl_client --server http://<PC_IP>:5000 --client-id 0 \
+       --model cnn --num-clients 2 --seed 42
    # 树莓派 #2
-   python3 -m client.fl_client --server http://<PC_IP>:5000 --client-id 1
+   python3 -m client.fl_client --server http://<PC_IP>:5000 --client-id 1 \
+       --model cnn --num-clients 2 --seed 42
    ```
+
+   > ⚠ **三端一致性**：两台客户端与服务器的 `--model`、`--num-clients` 必须完全相同，否则模型参数维度对不上，聚合会失败。
+   >
+   > ⚠ **数据分片不重叠靠 seed 一致**：IID 划分用 `--seed`（默认 42）确定性地把训练集切成互不重叠的分片，两台 Pi 的 `--seed` 与 `--num-clients` 必须相同，才能保证 client 0 / client 1 各拿一半且无重复。若想做 Non-IID 对比，两台同时加 `--partition noniid`（仍需 seed 一致）。
+   >
 
 两台客户端连上后，服务器即开始逐轮 FedAvg，看板实时刷新曲线。
 
@@ -156,26 +168,26 @@ python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1
 
 **服务器** `python -m server.fl_server`：
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--host` | 0.0.0.0 | 监听地址（0.0.0.0 允许局域网访问） |
-| `--port` | 5000 | 端口 |
-| `--rounds` | 15 | 通信轮数 T |
-| `--num-clients` | 2 | 客户端数（=树莓派数） |
-| `--model` | cnn | `cnn` 或 `mlp` |
+| 参数              | 默认    | 说明                               |
+| ----------------- | ------- | ---------------------------------- |
+| `--host`        | 0.0.0.0 | 监听地址（0.0.0.0 允许局域网访问） |
+| `--port`        | 5000    | 端口                               |
+| `--rounds`      | 15      | 通信轮数 T                         |
+| `--num-clients` | 2       | 客户端数（=树莓派数）              |
+| `--model`       | cnn     | `cnn` 或 `mlp`                 |
 
 **客户端** `python -m client.fl_client`：
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--server` | http://127.0.0.1:5000 | 服务器地址 |
-| `--client-id` | 必填 | 客户端编号 0..N-1 |
-| `--local-epochs` | 1 | 每轮本地训练 epoch 数 E |
-| `--local-steps` | 0 | >0 时每轮只训这么多 batch（控时） |
-| `--batch-size` | 32 | |
-| `--lr` | 0.01 | |
-| `--model` | cnn | 需与服务器一致 |
-| `--partition` | iid | `iid` 或 `noniid`（提高用） |
+| 参数               | 默认                  | 说明                              |
+| ------------------ | --------------------- | --------------------------------- |
+| `--server`       | http://127.0.0.1:5000 | 服务器地址                        |
+| `--client-id`    | 必填                  | 客户端编号 0..N-1                 |
+| `--local-epochs` | 1                     | 每轮本地训练 epoch 数 E           |
+| `--local-steps`  | 0                     | >0 时每轮只训这么多 batch（控时） |
+| `--batch-size`   | 32                    |                                   |
+| `--lr`           | 0.01                  |                                   |
+| `--model`        | cnn                   | 需与服务器一致                    |
+| `--partition`    | iid                   | `iid` 或 `noniid`（提高用）   |
 
 > ⚠ 客户端的 `--model`、`--num-clients` 需与服务器保持一致，否则参数维度对不上。
 
@@ -243,9 +255,9 @@ model.eval()
 
 ## 10. 对应任务书要求
 
-| 任务书要求 | 本项目实现 |
-|------------|------------|
-| 硬件环境配置 + 多树莓派网络互通 | `setup_pi.sh` + HTTP/Flask 通信 |
-| 基于 MNIST 的 FedAvg | `aggregate.fedavg` + MNIST 闭环 |
-| 模型下发 / 参数收集 / 加权聚合 | `/get_model`、`/submit_update`、FedAvg |
-| 实时监控准确率曲线 | 网页看板 + `metrics.csv` + `curves.png` |
+| 任务书要求                      | 本项目实现                                 |
+| ------------------------------- | ------------------------------------------ |
+| 硬件环境配置 + 多树莓派网络互通 | `setup_pi.sh` + HTTP/Flask 通信          |
+| 基于 MNIST 的 FedAvg            | `aggregate.fedavg` + MNIST 闭环          |
+| 模型下发 / 参数收集 / 加权聚合  | `/get_model`、`/submit_update`、FedAvg |
+| 实时监控准确率曲线              | 网页看板 +`metrics.csv` + `curves.png` |
