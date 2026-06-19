@@ -1,15 +1,18 @@
-"""逐层定位树莓派前向 NaN（不需要服务器）。
+"""定位"加载权重后前向变 NaN"的根因（不需要服务器，在树莓派本地复现）。
 
-已确认：服务器下发的权重传到 Pi 后逐位正确且有限，但用它前向得到 NaN。
-本脚本在 Pi 本地复现并逐层检查，回答：
-  1) 是「加载权重(load_state_dict/序列化往返)」触发的，还是卷积算子本身？
-  2) NaN 最先出现在哪一层（conv1/pool/conv2/fc1...）？
-  3) 单线程是否能避免？
-  4) MLP 是否完全正常（→ 能否用 --model mlp 绕过）？
+核心矛盾：
+  - check_data.py：全新初始化的模型前向正常；
+  - probe_transfer.py：加载(load_state_dict)同样数值的权重后前向 NaN。
+两者权重数值相同，唯一区别是是否经过「序列化往返 + load_state_dict（内部 torch.from_numpy）」。
+
+本脚本在 Pi 上对同一组权重做三种加载方式并逐层比对，回答：
+  1) 往返前后权重是否逐位完全相同？（验证序列化无损）
+  2) 全新权重 vs 加载权重，各层前向是否 NaN？最先在哪层 NaN？
+  3) 用「clone().contiguous() 干净拷贝」加载能否避免 NaN？（这就是潜在修复）
 
 在树莓派 fl 目录下运行：
     python3 scripts/diagnose_forward.py
-把输出发回即可。
+把输出整段发回。
 """
 
 import os
@@ -29,57 +32,63 @@ def fin(t):
     return bool(torch.isfinite(t).all())
 
 
-def step_cnn(model, x, tag):
-    """逐层跑 SimpleCNN 的前向并报告每层是否有限，返回最先 NaN 的层名。"""
-    first_bad = None
-    z = model.conv1(x); ok = fin(z); first_bad = first_bad or (None if ok else "conv1")
-    z = model.pool(F.relu(z)); ok2 = fin(z); first_bad = first_bad or (None if ok2 else "pool1")
-    z = model.conv2(z); ok3 = fin(z); first_bad = first_bad or (None if ok3 else "conv2")
-    z = model.pool(F.relu(z)); ok4 = fin(z); first_bad = first_bad or (None if ok4 else "pool2")
+def per_layer(model, x):
+    """逐层跑 SimpleCNN，返回最先出现 NaN 的层名（None 表示全部正常）。"""
+    z = model.conv1(x)
+    if not fin(z): return "conv1"
+    z = model.pool(F.relu(z))
+    if not fin(z): return "pool1"
+    z = model.conv2(z)
+    if not fin(z): return "conv2"
+    z = model.pool(F.relu(z))
+    if not fin(z): return "pool2"
     z = torch.flatten(z, 1)
-    z = model.fc1(z); ok5 = fin(z); first_bad = first_bad or (None if ok5 else "fc1")
-    z = model.fc2(F.relu(z)); ok6 = fin(z); first_bad = first_bad or (None if ok6 else "fc2")
-    print(f"  [{tag}] conv1={ok} pool1={ok2} conv2={ok3} pool2={ok4} fc1={ok5} fc2={ok6}"
-          f"  -> 最先NaN: {first_bad or '无(全部正常)'}")
-    return first_bad
-
-
-def run_cnn(no_grad):
-    ctx = torch.no_grad() if no_grad else torch.enable_grad()
-    with ctx:
-        torch.manual_seed(0)
-        m_fresh = build_model("cnn", "mnist")
-        step_cnn(m_fresh, X, f"全新权重 no_grad={no_grad}")
-
-        # 序列化往返后 load_state_dict（复现真实客户端的加载路径）
-        sd = bytes_to_state_dict(state_dict_to_bytes(m_fresh.state_dict()))
-        m_reload = build_model("cnn", "mnist")
-        m_reload.load_state_dict(sd)
-        step_cnn(m_reload, X, f"加载往返权重 no_grad={no_grad}")
+    z = model.fc1(z)
+    if not fin(z): return "fc1"
+    z = model.fc2(F.relu(z))
+    if not fin(z): return "fc2"
+    return None
 
 
 def main():
-    global X
     ds = load_mnist("./data", train=True, download=True)
     X, _ = next(iter(make_loader(partition_iid(ds, 2, 0), 32, shuffle=True)))
-    print(f"torch={torch.__version__}  默认线程={torch.get_num_threads()}  输入finite={fin(X)}\n")
+    print(f"torch={torch.__version__}  线程={torch.get_num_threads()}  输入finite={fin(X)}\n")
 
-    print("=== CNN / 默认线程 ===")
-    run_cnn(no_grad=False)
-    run_cnn(no_grad=True)
+    # 全新模型（= check_data 场景，自带原生权重）
+    torch.manual_seed(0)
+    m_fresh = build_model("cnn", "mnist")
+    fresh_sd = m_fresh.state_dict()
 
-    print("\n=== CNN / 单线程(set_num_threads(1)) ===")
-    torch.set_num_threads(1)
-    run_cnn(no_grad=False)
-    run_cnn(no_grad=True)
+    # 序列化往返：Pi -> bytes -> Pi（内部 from_numpy）
+    rt_sd = bytes_to_state_dict(state_dict_to_bytes(fresh_sd))
 
-    print("\n=== MLP / 加载往返权重（验证能否用 --model mlp 绕过）===")
-    torch.set_num_threads(torch.get_num_threads())
-    m = build_model("mlp", "mnist")
-    sd = bytes_to_state_dict(state_dict_to_bytes(m.state_dict()))
-    m2 = build_model("mlp", "mnist"); m2.load_state_dict(sd)
-    with torch.no_grad():
-        print(f"  MLP 前向 finite = {fin(m2(X))}")
+    # 1) 权重往返一致性（你提的校验）
+    print("[1] 往返前后权重是否逐位相同：")
+    all_same = True
+    for k in fresh_sd:
+        same = torch.equal(fresh_sd[k].float(), rt_sd[k].float())
+        all_same = all_same and same
+        if not same:
+            print(f"    不一致层: {k}")
+    print(f"    结论: 全部逐位相同 = {all_same}\n")
+
+    # 2) 三种加载方式的前向对比
+    print("[2] 各方式前向最先 NaN 的层（None=全部正常）：")
+    print(f"    A 全新原生权重           : {per_layer(m_fresh, X)}")
+
+    m_rt = build_model("cnn", "mnist")
+    m_rt.load_state_dict(rt_sd)
+    print(f"    B 加载往返权重(from_numpy): {per_layer(m_rt, X)}")
+
+    # 3) 潜在修复：加载前把张量 clone().contiguous() 成干净的原生张量
+    clean_sd = {k: v.detach().clone().contiguous() for k, v in rt_sd.items()}
+    m_clean = build_model("cnn", "mnist")
+    m_clean.load_state_dict(clean_sd)
+    print(f"    C 加载干净拷贝(contiguous): {per_layer(m_clean, X)}")
+
+    print("\n判读：若 A=None 而 B=某层，则确为『加载路径』触发；"
+          "若 C=None，则修复 = 反序列化时 clone().contiguous()。")
 
 
 if __name__ == "__main__":
