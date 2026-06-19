@@ -80,6 +80,9 @@ def run(args):
         data_dir=args.data_dir, seed=args.seed,
     )
     device = torch.device("cpu")
+    if getattr(args, "threads", 0) and args.threads > 0:
+        torch.set_num_threads(args.threads)
+        print(f"[client {args.client_id}] torch 线程数设为 {args.threads}", flush=True)
 
     print(f"[client {args.client_id}] 准备本地数据分片 ...", flush=True)
     loader, n_local = build_local_loader(cfg, args.client_id)
@@ -162,6 +165,8 @@ def main():
     ap.add_argument("--partition", default="iid", choices=["iid", "noniid"])
     ap.add_argument("--data-dir", default="./data")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--threads", type=int, default=0,
+                    help=">0 时设置 torch 线程数；armv7l 树莓派 conv 偶发 NaN 时可设 1")
     ap.add_argument("--poll-interval", type=float, default=2.0, help="等待下一轮的轮询间隔(秒)")
     args = ap.parse_args()
     run(args)
