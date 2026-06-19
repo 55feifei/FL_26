@@ -63,7 +63,7 @@ def local_train(model, loader, cfg, device):
 
 def build_local_loader(cfg, client_id):
     """加载完整数据集后，按 client_id 取出本机的私有分片。"""
-    train_set = load_mnist(cfg.data_dir, train=True, download=True)
+    train_set = load_mnist(cfg.data_dir, train=True, download=True, channels=cfg.channels)
     if cfg.partition == "noniid":
         subset = partition_noniid(train_set, cfg.num_clients, client_id, seed=cfg.seed)
     else:
@@ -76,8 +76,8 @@ def run(args):
     cfg = Config(
         num_clients=args.num_clients, local_epochs=args.local_epochs,
         local_steps=args.local_steps, batch_size=args.batch_size, lr=args.lr,
-        model=args.model, dataset=args.dataset, partition=args.partition,
-        data_dir=args.data_dir, seed=args.seed,
+        model=args.model, channels=args.channels, dataset=args.dataset,
+        partition=args.partition, data_dir=args.data_dir, seed=args.seed,
     )
     device = torch.device("cpu")
     if getattr(args, "threads", 0) and args.threads > 0:
@@ -89,7 +89,7 @@ def run(args):
     print(f"[client {args.client_id}] 本地样本数={n_local}  服务器={args.server}  "
           f"模型={cfg.model}  分布={cfg.partition}", flush=True)
 
-    model = build_model(cfg.model, cfg.dataset).to(device)
+    model = build_model(cfg.model, cfg.dataset, channels=cfg.channels).to(device)
     last_trained = 0  # 已经完成训练的最大轮次
 
     while True:
@@ -162,6 +162,8 @@ def main():
     ap.add_argument("--lr", type=float, default=0.01)
     ap.add_argument("--model", default="mlp", choices=["cnn", "mlp"],
                     help="默认 mlp（部分 armv7l 树莓派 torch 的 conv 不可靠）；torch 正常时可用 cnn")
+    ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
+                    help="输入通道数（须与服务器一致）；用 CNN 时在 armv7l 树莓派上设 3 绕开单通道卷积 bug")
     ap.add_argument("--dataset", default="mnist")
     ap.add_argument("--partition", default="iid", choices=["iid", "noniid"])
     ap.add_argument("--data-dir", default="./data")

@@ -22,6 +22,7 @@ class Config:
 
     # ===== 模型 / 数据 =====
     model: str = "mlp"            # "cnn" | "mlp"（默认 mlp：部分 armv7l 树莓派 torch 构建的 conv 不可靠）
+    channels: int = 1             # 输入通道数；CNN 在 armv7l Pi 上需设 3（绕开单通道卷积 bug）
     dataset: str = "mnist"        # 预留扩展: "mnist" | "cifar10"
     partition: str = "iid"        # 预留扩展: "iid" | "noniid"
     data_dir: str = "./data"

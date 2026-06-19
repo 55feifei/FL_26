@@ -14,18 +14,22 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 
 
-def _mnist_transform():
-    return transforms.Compose([
+def _mnist_transform(channels=1):
+    t = [
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,)),  # MNIST 全局均值/方差
-    ])
+    ]
+    if channels == 3:
+        # 把单通道复制成 3 通道，绕开部分 armv7l 树莓派 torch 的"单通道卷积"bug
+        t.append(transforms.Lambda(lambda x: x.repeat(3, 1, 1)))
+    return transforms.Compose(t)
 
 
-def load_mnist(data_dir="./data", train=True, download=True):
-    """加载 MNIST（首次会自动下载到 data_dir/MNIST/）。"""
+def load_mnist(data_dir="./data", train=True, download=True, channels=1):
+    """加载 MNIST（首次会自动下载到 data_dir/MNIST/）。channels=3 时复制为三通道。"""
     return datasets.MNIST(
         root=data_dir, train=train, download=download,
-        transform=_mnist_transform(),
+        transform=_mnist_transform(channels),
     )
 
 

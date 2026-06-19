@@ -45,7 +45,7 @@ class FLServer:
         self.device = torch.device("cpu")
 
         torch.manual_seed(cfg.seed)
-        self.model = build_model(cfg.model, cfg.dataset).to(self.device)
+        self.model = build_model(cfg.model, cfg.dataset, channels=cfg.channels).to(self.device)
 
         self.current_round = 1          # 当前进行中的轮次（从 1 开始）
         self.done = False               # 是否已完成全部轮次
@@ -55,7 +55,7 @@ class FLServer:
         self.start_time = time.time()
 
         # 全局测试集（统一在服务器评估，保证各轮可比）
-        test_set = load_mnist(cfg.data_dir, train=False, download=True)
+        test_set = load_mnist(cfg.data_dir, train=False, download=True, channels=cfg.channels)
         self.test_loader = make_loader(test_set, cfg.eval_batch_size, shuffle=False)
 
         os.makedirs(cfg.results_dir, exist_ok=True)
@@ -242,6 +242,8 @@ def main():
     ap.add_argument("--model", default="mlp", choices=["cnn", "mlp"],
                     help="默认 mlp（须与客户端一致）；客户端树莓派 torch 正常时可用 cnn")
     ap.add_argument("--dataset", default="mnist")
+    ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
+                    help="输入通道数（须与客户端一致）；CNN 在 armv7l 树莓派上设 3 绕开单通道卷积 bug")
     ap.add_argument("--data-dir", default="./data")
     ap.add_argument("--results-dir", default="./results")
     ap.add_argument("--seed", type=int, default=42)
@@ -249,8 +251,8 @@ def main():
 
     cfg = Config(
         num_clients=args.num_clients, rounds=args.rounds, model=args.model,
-        dataset=args.dataset, data_dir=args.data_dir, results_dir=args.results_dir,
-        seed=args.seed, host=args.host, port=args.port,
+        channels=args.channels, dataset=args.dataset, data_dir=args.data_dir,
+        results_dir=args.results_dir, seed=args.seed, host=args.host, port=args.port,
     )
 
     global server

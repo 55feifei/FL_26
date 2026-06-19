@@ -50,9 +50,14 @@ class SimpleCNN(nn.Module):
         return self.fc2(x)
 
 
-def build_model(name="cnn", dataset="mnist"):
-    """根据名称与数据集构建模型。"""
-    in_channels = 1 if dataset == "mnist" else 3
+def build_model(name="cnn", dataset="mnist", channels=None):
+    """根据名称与数据集构建模型。
+
+    channels: 显式指定输入通道数（覆盖按 dataset 的推断）。
+        某些 armv7l 树莓派 torch 构建的"单通道卷积"反向有 bug（第一层 grad=None/偶发 NaN），
+        对 MNIST 把通道复制成 3 即可绕过——此时需 channels=3 使 conv1 与数据通道一致。
+    """
+    in_channels = channels if channels else (1 if dataset == "mnist" else 3)
     input_size = 28 if dataset == "mnist" else 32
     num_classes = 10
 

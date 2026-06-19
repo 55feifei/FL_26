@@ -245,9 +245,13 @@ model.eval()
 
 **Q6.（重要）真机一上来全局准确率就塌到 ~0.10、损失为 `nan`？**
 现象：PC 单机自测正常，但部署到树莓派后第 1 轮起 `loss=nan`、准确率 ≈ 1/10（模型退化成只猜一个类）。
-**根因**：部分 armv7l 树莓派的非官方 `torch` 构建（如 `torch 1.4.0a0`）**卷积(Conv2d)内核有缺陷**——对有限输入+有限权重也会**偶发**算出 NaN（实测 30 次前向有 26~30 次 NaN，单线程更糟）。一旦某客户端上传 NaN，FedAvg 平均后全局模型全毁。**这不是序列化/网络/权重数值问题**（已用 `scripts/probe_transfer.py` 验证下发权重逐位正确）。
-**定位工具**：`python3 scripts/check_data.py`、`scripts/diagnose_forward.py`、`scripts/stress_conv.py` 三件套可逐步复现并量化（很适合写进报告"问题分析"）。
-**解决**：改用 **MLP**（不含卷积，实测 0/30 完全稳定，MNIST 仍可达 ~97%）——本项目**默认即 `--model mlp`**，三端保持一致即可。若日后换到卷积正常的 `torch` 稳定版 wheel，可再 `--model cnn` 切回。
+**根因**：部分 armv7l 树莓派的非官方 `torch` 构建（如 `torch 1.4.0a0`）**"输入通道=1 的卷积"路径有 bug**——表现为第一层反向梯度为 `None`（网络静默不训练，loss 不降）或前向偶发 NaN。MNIST 恰好是单通道，正好踩中。一旦某客户端上传坏权重，FedAvg 后全局模型即失效。**这不是序列化/网络/权重数值问题**（已用 `scripts/probe_transfer.py` 验证下发权重逐位正确）。
+**定位工具**：`scripts/test_3channel.py`（一键对照 1 vs 3 通道）、`check_data.py`、`diagnose_forward.py`、`stress_conv.py`（很适合写进报告"问题分析"）。
+**解决（二选一）**：
+- **保留 CNN（推荐）**：把 MNIST 单通道**复制成 3 通道**绕开该 bug——三端都加 `--model cnn --channels 3` 即可，实测梯度正常、loss 正常下降、MNIST 可达 ~99%。CIFAR-10 本就是 3 通道，天然不受影响。
+- **改用 MLP**：`--model mlp`（不含卷积，本项目默认值），MNIST 可达 ~97%。
+> 三端 `--model` 与 `--channels` 必须一致，否则参数维度对不上。若日后换 64 位官方 torch，单通道卷积也正常，可回到 `--channels 1`。
+> 已内置鲁棒性：服务器 `fedavg` 自动剔除含 NaN/Inf 的更新并保留上一轮模型；客户端本地训练出现 NaN 会 `[警告]` 并定位节点。
 > 已内置的鲁棒性：服务器 `fedavg` 会自动剔除含 NaN/Inf 的更新并保留上一轮模型；客户端本地训练出现 NaN 会打印 `[警告]` 并定位到具体节点。
 
 ---
