@@ -239,7 +239,8 @@ def main():
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--rounds", type=int, default=15, help="通信轮数 T")
     ap.add_argument("--num-clients", type=int, default=2, help="客户端数量 = 树莓派数量")
-    ap.add_argument("--model", default="cnn", choices=["cnn", "mlp"])
+    ap.add_argument("--model", default="mlp", choices=["cnn", "mlp"],
+                    help="默认 mlp（须与客户端一致）；客户端树莓派 torch 正常时可用 cnn")
     ap.add_argument("--dataset", default="mnist")
     ap.add_argument("--data-dir", default="./data")
     ap.add_argument("--results-dir", default="./results")

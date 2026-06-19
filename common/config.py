@@ -21,7 +21,7 @@ class Config:
     momentum: float = 0.9
 
     # ===== 模型 / 数据 =====
-    model: str = "cnn"            # "cnn" | "mlp"
+    model: str = "mlp"            # "cnn" | "mlp"（默认 mlp：部分 armv7l 树莓派 torch 构建的 conv 不可靠）
     dataset: str = "mnist"        # 预留扩展: "mnist" | "cifar10"
     partition: str = "iid"        # 预留扩展: "iid" | "noniid"
     data_dir: str = "./data"

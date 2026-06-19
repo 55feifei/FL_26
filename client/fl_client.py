@@ -160,7 +160,8 @@ def main():
     ap.add_argument("--local-steps", type=int, default=0, help=">0 时每轮只训练这么多 batch（控时）")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=0.01)
-    ap.add_argument("--model", default="cnn", choices=["cnn", "mlp"])
+    ap.add_argument("--model", default="mlp", choices=["cnn", "mlp"],
+                    help="默认 mlp（部分 armv7l 树莓派 torch 的 conv 不可靠）；torch 正常时可用 cnn")
     ap.add_argument("--dataset", default="mnist")
     ap.add_argument("--partition", default="iid", choices=["iid", "noniid"])
     ap.add_argument("--data-dir", default="./data")
