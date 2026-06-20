@@ -58,6 +58,60 @@ def partition_noniid(dataset, num_clients, client_id, classes_per_client=2, seed
     return Subset(dataset, idx.tolist())
 
 
+def partition_imbalanced(dataset, num_clients, client_id, ratios, seed=42):
+    """不均衡 IID 划分：按 ratios 指定的比例将数据集分配给各客户端（内容 IID，数量不均）。
+
+    参数:
+        ratios: 各客户端样本比例列表，长度须等于 num_clients，各元素之和应为 1.0。
+                例如 [0.9, 0.1] 表示 client 0 获得 90%，client 1 获得 10%。
+    """
+    assert len(ratios) == num_clients, "ratios 长度须等于 num_clients"
+    n = len(dataset)
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(n)
+    sizes = [int(r * n) for r in ratios]
+    sizes[-1] = n - sum(sizes[:-1])   # 修正浮点舍入，保证总和 = n
+    start, splits = 0, []
+    for s in sizes:
+        splits.append(idx[start:start + s])
+        start += s
+    return Subset(dataset, splits[client_id].tolist())
+
+
+def partition_noniid_dirichlet(dataset, num_clients, client_id, alpha=0.5, seed=42):
+    """Dirichlet 分布 Non-IID 划分（比 McMahan shard 法更灵活，是学术界主流方案）。
+
+    对每个类别 c，从 Dir(alpha) 采样各客户端的分配比例，alpha 越小越 Non-IID：
+      alpha → 0  : 每个客户端只拥有极少数类别的样本（极度 Non-IID）
+      alpha = 0.1: 高度 Non-IID，各客户端数据高度偏斜
+      alpha = 0.5: 中等 Non-IID，有明显类别偏斜但每类都有少量样本
+      alpha → ∞  : 接近 IID，每个客户端的类别分布趋向均匀
+
+    参数:
+        alpha: Dirichlet 浓度参数，控制异质程度。
+    """
+    labels = np.asarray(dataset.targets)
+    num_classes = int(labels.max()) + 1
+    rng = np.random.default_rng(seed)
+
+    client_indices = [[] for _ in range(num_clients)]
+    for c in range(num_classes):
+        class_idx = np.where(labels == c)[0].copy()
+        rng.shuffle(class_idx)
+        n_c = len(class_idx)
+        # 从 Dirichlet 采样各客户端对类别 c 的分配比例
+        props = rng.dirichlet(np.ones(num_clients) * alpha)
+        counts = (props * n_c).astype(int)
+        counts[-1] = n_c - int(counts[:-1].sum())   # 修正舍入，保证总和 = n_c
+        counts = np.maximum(counts, 0)
+        start = 0
+        for k, cnt in enumerate(counts):
+            client_indices[k].extend(class_idx[start:start + int(cnt)].tolist())
+            start += int(cnt)
+
+    return Subset(dataset, client_indices[client_id])
+
+
 def make_loader(dataset, batch_size, shuffle, num_workers=0):
     """构建 DataLoader。树莓派上 num_workers 默认 0（多进程加载在 Pi 上易出问题）。"""
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
