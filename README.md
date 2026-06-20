@@ -183,10 +183,10 @@ python scripts/prepare_data.py
 python -m server.fl_server --rounds 5 --num-clients 2 --model mlp
 
 # 第三步：启动客户端 0（新终端）
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0
 
 # 第四步：启动客户端 1（新终端）
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1
 ```
 
 浏览器打开 **http://127.0.0.1:5000/** 查看实时看板。训练结束后检查 `results/` 目录。
@@ -296,7 +296,7 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 | `--results-dir` | `./results` | 输出目录 |
 | `--seed` | `42` | 随机种子 |
 
-### 客户端 `python -m client.fl_client`
+### 客户端 `python3 -m client.fl_client`
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
@@ -546,10 +546,10 @@ python -m server.fl_server --dataset cifar10 --model deepcnn --channels 3 \
     --norm group --rounds 30 --num-clients 2
 
 # 3. 两个客户端（另开两个终端，超参建议 lr=0.05 batch=64）
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
     --dataset cifar10 --model deepcnn --channels 3 --norm group \
     --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
     --dataset cifar10 --model deepcnn --channels 3 --norm group \
     --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
 
@@ -565,7 +565,7 @@ python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
 ```bash
 # 客户端加 --partition dirichlet --alpha 0.1 即切到高度 Non-IID（服务器不变）
 # 例：Non-IID + BatchNorm（与 Non-IID + GroupNorm 对比）
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
     --dataset cifar10 --model resnet --channels 3 --norm batch \
     --partition dirichlet --alpha 0.1 --num-clients 2 --lr 0.05
 ```
@@ -687,10 +687,10 @@ python scripts/prepare_data.py
 python -m server.fl_server --rounds 15 --num-clients 2 --model mlp
 
 # 终端 2：客户端 0
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --model mlp
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --model mlp
 
 # 终端 3：客户端 1
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model mlp
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model mlp
 ```
 
 ---
@@ -704,10 +704,10 @@ python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model 
 python -m server.fl_server --rounds 15 --num-clients 2 --model cnn --channels 3
 
 # 终端 2：客户端 0
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --model cnn --channels 3
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --model cnn --channels 3
 
 # 终端 3：客户端 1
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model cnn --channels 3
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model cnn --channels 3
 ```
 
 ---
@@ -830,10 +830,10 @@ python -m server.fl_server --dataset cifar10 --model resnet --channels 3 \
     --norm group --rounds 30 --num-clients 2
 
 # 终端 2 / 3：两个客户端
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
     --dataset cifar10 --model resnet --channels 3 --norm group \
     --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
-python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
+python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
     --dataset cifar10 --model resnet --channels 3 --norm group \
     --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
 ```
