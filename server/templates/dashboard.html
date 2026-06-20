@@ -39,6 +39,7 @@
     <div class="card"><div class="label">全局准确率</div><div class="value acc"><span id="accNow">-</span></div></div>
     <div class="card"><div class="label">全局损失</div><div class="value loss"><span id="lossNow">-</span></div></div>
     <div class="card"><div class="label">模型 / 数据集</div><div class="value small"><span id="modelName">-</span> · <span id="datasetName">-</span></div></div>
+    <div class="card"><div class="label">数据分布</div><div class="value small"><span id="partition">-</span></div></div>
     <div class="card"><div class="label">客户端</div><div class="value"><span id="clientCount">0</span><span style="color:#8b9bb4;font-size:16px"> / <span id="clientTotal">-</span></span></div></div>
   </div>
 
@@ -103,14 +104,19 @@ function drawChart(canvas, points, color, yMin, yMax) {
 }
 
 function render(d) {
+  const clients = d.clients || {};
+  const ids = Object.keys(clients).sort();
   const badge = document.getElementById('statusBadge');
   if (d.done) { badge.textContent = '✓ 训练完成'; badge.className = 'badge done'; }
-  else { badge.textContent = '● 训练中'; badge.className = 'badge run'; }
+  else if (ids.length === 0) { badge.textContent = '● 等待客户端连接'; badge.className = 'badge run'; }
+  else if (d.history && d.history.length > 1) { badge.textContent = '● 训练中'; badge.className = 'badge run'; }
+  else { badge.textContent = `● 已连接 ${ids.length}/${d.num_clients}，等待训练`; badge.className = 'badge run'; }
 
   document.getElementById('roundNow').textContent = d.done ? d.total_rounds : d.current_round;
   document.getElementById('roundTotal').textContent = d.total_rounds;
   document.getElementById('modelName').textContent = d.model;
   document.getElementById('datasetName').textContent = d.dataset;
+  document.getElementById('partition').textContent = d.partition || '—';
   document.getElementById('clientTotal').textContent = d.num_clients;
 
   const hist = d.history || [];
@@ -123,8 +129,6 @@ function render(d) {
   drawChart(document.getElementById('lossChart'),
             hist.map(h => ({ x: h.round, y: h.loss })), '#ff7b72', 0, null);
 
-  const clients = d.clients || {};
-  const ids = Object.keys(clients).sort();
   document.getElementById('clientCount').textContent = ids.length;
   const tbody = document.getElementById('clientRows');
   if (ids.length === 0) {
@@ -132,8 +136,11 @@ function render(d) {
   } else {
     tbody.innerHTML = ids.map(id => {
       const c = clients[id];
+      const round = c.last_round > 0 ? c.last_round
+                  : '<span style="color:#8b9bb4">已连接·待训练</span>';
+      const ns = (c.num_samples != null) ? c.num_samples : '—';
       return `<tr><td><span class="dot" style="background:#58a6ff"></span>client ${id}</td>`
-           + `<td>${c.last_round}</td><td>${c.num_samples}</td><td>${c.last_seen}</td></tr>`;
+           + `<td>${round}</td><td>${ns}</td><td>${c.last_seen}</td></tr>`;
     }).join('');
   }
 }

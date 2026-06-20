@@ -52,6 +52,7 @@ class FLServer:
         self.round_updates = {}         # 本轮已收到的更新 {client_id: (state_dict, n)}
         self.history = []               # [{round, accuracy, loss, time}]
         self.clients = {}               # {client_id: {last_round, num_samples, last_seen}}
+        self.partition_desc = None      # 客户端上报的数据划分方式（iid/noniid 及参数），供看板展示
         self.start_time = time.time()
 
         # 全局测试集（统一在服务器评估，保证各轮可比）
@@ -95,6 +96,22 @@ class FLServer:
         with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([rnd, f"{acc:.4f}", f"{loss:.4f}", elapsed])
         print(f"[Round {rnd:>2}] 全局准确率={acc:.4f}  损失={loss:.4f}  ({elapsed}s)", flush=True)
+
+    # ---------- 客户端注册（拉取模型时上报，使其在首轮训练前即可见）----------
+    def register(self, client_id, partition=None, num_samples=None):
+        """客户端 GET /get_model 时调用：登记/刷新该客户端，避免看板在首次上传前显示空表。
+
+        仅刷新 last_seen 与 num_samples，不触碰 last_round（由 submit 维护），
+        因此训练开始后此处不会把已上传的轮次回退成 0。
+        """
+        with self.lock:
+            c = self.clients.setdefault(
+                client_id, {"last_round": 0, "num_samples": None, "last_seen": 0.0})
+            c["last_seen"] = round(time.time() - self.start_time, 1)
+            if num_samples is not None:
+                c["num_samples"] = num_samples
+            if partition:
+                self.partition_desc = partition
 
     # ---------- 接收客户端更新 ----------
     def submit(self, client_id, rnd, num_samples, weights_bytes):
@@ -188,6 +205,12 @@ server = None  # 在 main() 中初始化
 @app.route("/get_model", methods=["GET"])
 def get_model():
     """下发当前全局模型。轮次/完成标志放在响应头，权重为 npz 二进制 body。"""
+    # 客户端顺带上报自身信息（client_id / 数据划分 / 本地样本数），登记后即可在看板显示
+    client_id = request.args.get("client_id", type=int)
+    if client_id is not None:
+        server.register(client_id,
+                        partition=request.args.get("partition"),
+                        num_samples=request.args.get("num_samples", type=int))
     rnd, done, num_clients, body = server.snapshot()
     headers = {
         "X-FL-Round": str(rnd),
@@ -219,6 +242,7 @@ def status():
             "done": server.done,
             "model": server.cfg.model,
             "dataset": server.cfg.dataset,
+            "partition": server.partition_desc,
             "num_clients": server.cfg.num_clients,
             "history": server.history,
             "clients": server.clients,

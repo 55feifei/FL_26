@@ -147,17 +147,23 @@ def run(args):
 
     print(f"[client {args.client_id}] 准备本地数据分片 ...", flush=True)
     loader, n_local, label_dist = build_local_loader(cfg, args.client_id)
+    part_desc = describe_partition(cfg)  # 上报给服务器看板展示
     print(f"[client {args.client_id}] 本地样本数={n_local}  服务器={args.server}  "
-          f"模型={cfg.model}  分布={describe_partition(cfg)}", flush=True)
+          f"模型={cfg.model}  分布={part_desc}", flush=True)
     print(f"[client {args.client_id}] 本地标签分布={label_dist}", flush=True)
 
     model = build_model(cfg.model, cfg.dataset, channels=cfg.channels).to(device)
     last_trained = 0  # 已经完成训练的最大轮次
 
     while True:
-        # 1) 拉取全局模型
+        # 1) 拉取全局模型（顺带上报自身信息，让看板在首轮训练前就能显示已连接的客户端）
         try:
-            resp = requests.get(f"{args.server}/get_model", timeout=120)
+            resp = requests.get(
+                f"{args.server}/get_model",
+                params={"client_id": args.client_id,
+                        "partition": part_desc, "num_samples": n_local},
+                timeout=120,
+            )
         except requests.RequestException as e:
             print(f"[client {args.client_id}] 连不上服务器，5s 后重试：{e}", flush=True)
             time.sleep(5)
