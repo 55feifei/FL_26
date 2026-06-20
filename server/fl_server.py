@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify
 
 from common.config import Config
 from common.model import build_model
-from common.data import load_mnist, make_loader
+from common.data import load_dataset, make_loader
 from common.serialize import state_dict_to_bytes, bytes_to_state_dict
 from server.aggregate import fedavg
 
@@ -45,7 +45,7 @@ class FLServer:
         self.device = torch.device("cpu")
 
         torch.manual_seed(cfg.seed)
-        self.model = build_model(cfg.model, cfg.dataset, channels=cfg.channels).to(self.device)
+        self.model = build_model(cfg.model, cfg.dataset, channels=cfg.channels, norm=cfg.norm).to(self.device)
 
         self.current_round = 1          # 当前进行中的轮次（从 1 开始）
         self.done = False               # 是否已完成全部轮次
@@ -55,7 +55,7 @@ class FLServer:
         self.start_time = time.time()
 
         # 全局测试集（统一在服务器评估，保证各轮可比）
-        test_set = load_mnist(cfg.data_dir, train=False, download=True, channels=cfg.channels)
+        test_set = load_dataset(cfg.dataset, cfg.data_dir, train=False, download=True, channels=cfg.channels)
         self.test_loader = make_loader(test_set, cfg.eval_batch_size, shuffle=False)
 
         os.makedirs(cfg.results_dir, exist_ok=True)
@@ -149,6 +149,8 @@ class FLServer:
             "state_dict": self.model.state_dict(),
             "model": self.cfg.model,
             "dataset": self.cfg.dataset,
+            "channels": self.cfg.channels,
+            "norm": self.cfg.norm,
             "round": self.current_round,
             "accuracy": last.get("accuracy"),
         }, path)
@@ -239,11 +241,14 @@ def main():
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--rounds", type=int, default=15, help="通信轮数 T")
     ap.add_argument("--num-clients", type=int, default=2, help="客户端数量 = 树莓派数量")
-    ap.add_argument("--model", default="mlp", choices=["cnn", "mlp"],
-                    help="默认 mlp（须与客户端一致）；客户端树莓派 torch 正常时可用 cnn")
-    ap.add_argument("--dataset", default="mnist")
+    ap.add_argument("--model", default="mlp", choices=["mlp", "cnn", "deepcnn", "resnet"],
+                    help="模型（须与客户端一致）；默认 mlp；CIFAR-10 建议 deepcnn/resnet")
+    ap.add_argument("--dataset", default="mnist", choices=["mnist", "cifar10"],
+                    help="数据集（须与客户端一致）；cifar10 须配 --channels 3")
     ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
-                    help="输入通道数（须与客户端一致）；CNN 在 armv7l 树莓派上设 3 绕开单通道卷积 bug")
+                    help="输入通道数（须与客户端一致）；CNN 在 armv7l 树莓派上设 3 绕开单通道卷积 bug；CIFAR-10 须为 3")
+    ap.add_argument("--norm", default="group", choices=["batch", "group"],
+                    help="deepcnn/resnet 归一化（须与客户端一致）：group(FL 推荐，对 Non-IID 鲁棒) | batch")
     ap.add_argument("--data-dir", default="./data")
     ap.add_argument("--results-dir", default="./results")
     ap.add_argument("--seed", type=int, default=42)
@@ -251,7 +256,7 @@ def main():
 
     cfg = Config(
         num_clients=args.num_clients, rounds=args.rounds, model=args.model,
-        channels=args.channels, dataset=args.dataset, data_dir=args.data_dir,
+        channels=args.channels, dataset=args.dataset, norm=args.norm, data_dir=args.data_dir,
         results_dir=args.results_dir, seed=args.seed, host=args.host, port=args.port,
     )
 
@@ -259,7 +264,8 @@ def main():
     print("正在加载测试集并初始化全局模型 ...", flush=True)
     server = FLServer(cfg)
     print("=" * 48)
-    print(f"联邦学习服务器已启动：模型={cfg.model}  数据集={cfg.dataset}")
+    norm_info = f"  归一化={cfg.norm}" if cfg.model in ("deepcnn", "resnet") else ""
+    print(f"联邦学习服务器已启动：模型={cfg.model}  数据集={cfg.dataset}{norm_info}")
     print(f"等待 {cfg.num_clients} 个客户端，共进行 {cfg.rounds} 轮 FedAvg")
     print(f"看板地址：http://127.0.0.1:{cfg.port}/  （局域网用本机 IP 替换 127.0.0.1）")
     print("=" * 48, flush=True)

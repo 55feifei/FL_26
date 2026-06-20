@@ -1,6 +1,8 @@
 """数据加载与联邦分片（基于 torchvision）。
 
 - load_mnist(): 用 torchvision 自动下载并做标准预处理（ToTensor + Normalize）。
+- load_cifar10(): 发挥任务——彩色图像数据集（32x32x3, 10 类），训练集可选数据增强。
+- load_dataset(): 统一入口，按名称（"mnist" | "cifar10"）分发到上面两个加载器。
 - partition_iid(): 把训练集随机等分给各客户端，模拟"数据分散在不同边缘节点"。
 - partition_noniid(): 预留给提高部分（Non-IID 研究），每个客户端只拿到少数类别。
 
@@ -12,6 +14,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
+
+# CIFAR-10 三通道全局均值/方差（社区常用经验值）
+CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 
 
 def _mnist_transform(channels=1):
@@ -25,12 +31,58 @@ def _mnist_transform(channels=1):
     return transforms.Compose(t)
 
 
+def _cifar10_transform(train=True, augment=True):
+    """CIFAR-10 预处理。训练集默认加随机裁剪 + 水平翻转，缓解过拟合、提升泛化。"""
+    t = []
+    if train and augment:
+        t += [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+        ]
+    t += [
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+    ]
+    return transforms.Compose(t)
+
+
 def load_mnist(data_dir="./data", train=True, download=True, channels=1):
     """加载 MNIST（首次会自动下载到 data_dir/MNIST/）。channels=3 时复制为三通道。"""
     return datasets.MNIST(
         root=data_dir, train=train, download=download,
         transform=_mnist_transform(channels),
     )
+
+
+def load_cifar10(data_dir="./data", train=True, download=True, channels=3, augment=True):
+    """加载 CIFAR-10（首次会自动下载到 data_dir/cifar-10-batches-py/）。
+
+    CIFAR-10 原生为 32x32 三通道彩色图，channels 参数仅为与 load_mnist 接口对齐，
+    取值必须为 3（彩色图无法压成单通道而不丢信息）。训练集默认开启数据增强。
+    """
+    if channels != 3:
+        raise ValueError("CIFAR-10 为三通道彩色数据集，channels 必须为 3")
+    return datasets.CIFAR10(
+        root=data_dir, train=train, download=download,
+        transform=_cifar10_transform(train=train, augment=augment),
+    )
+
+
+def load_dataset(name, data_dir="./data", train=True, download=True, channels=None, augment=True):
+    """统一数据集入口：按名称分发到对应加载器。
+
+    name: "mnist" | "cifar10"
+    channels: None 时按数据集取默认（mnist=1, cifar10=3）。
+    augment: 仅对 CIFAR-10 训练集生效的数据增强开关。
+    """
+    name = name.lower()
+    if name == "mnist":
+        ch = channels if channels else 1
+        return load_mnist(data_dir, train=train, download=download, channels=ch)
+    if name == "cifar10":
+        return load_cifar10(data_dir, train=train, download=download,
+                            channels=channels if channels else 3, augment=augment)
+    raise ValueError(f"未知数据集: {name}（可选 'mnist' | 'cifar10'）")
 
 
 def partition_iid(dataset, num_clients, client_id, seed=42):

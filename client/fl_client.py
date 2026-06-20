@@ -29,7 +29,7 @@ import torch
 from common.config import Config
 from common.model import build_model
 from common.data import (
-    load_mnist, make_loader,
+    load_dataset, make_loader,
     partition_iid, partition_noniid,
     partition_noniid_dirichlet, partition_imbalanced,
 )
@@ -107,7 +107,7 @@ def build_local_loader(cfg, client_id):
       imbalanced —— 内容 IID 但样本数量按 ratios 不均衡
     返回 (loader, 本地样本数, 本地标签分布)。
     """
-    train_set = load_mnist(cfg.data_dir, train=True, download=True, channels=cfg.channels)
+    train_set = load_dataset(cfg.dataset, cfg.data_dir, train=True, download=True, channels=cfg.channels)
     p = cfg.partition
     if p in ("shard", "noniid"):
         subset = partition_noniid(train_set, cfg.num_clients, client_id,
@@ -136,7 +136,7 @@ def run(args):
     cfg = Config(
         num_clients=args.num_clients, local_epochs=args.local_epochs,
         local_steps=args.local_steps, batch_size=args.batch_size, lr=args.lr,
-        model=args.model, channels=args.channels, dataset=args.dataset,
+        model=args.model, channels=args.channels, dataset=args.dataset, norm=args.norm,
         partition=args.partition, data_dir=args.data_dir, seed=args.seed,
         classes_per_client=args.classes_per_client, alpha=args.alpha, ratios=ratios,
     )
@@ -151,7 +151,7 @@ def run(args):
           f"模型={cfg.model}  分布={describe_partition(cfg)}", flush=True)
     print(f"[client {args.client_id}] 本地标签分布={label_dist}", flush=True)
 
-    model = build_model(cfg.model, cfg.dataset, channels=cfg.channels).to(device)
+    model = build_model(cfg.model, cfg.dataset, channels=cfg.channels, norm=cfg.norm).to(device)
     last_trained = 0  # 已经完成训练的最大轮次
 
     while True:
@@ -222,11 +222,14 @@ def main():
     ap.add_argument("--local-steps", type=int, default=0, help=">0 时每轮只训练这么多 batch（控时）")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=0.01)
-    ap.add_argument("--model", default="mlp", choices=["cnn", "mlp"],
-                    help="默认 mlp（部分 armv7l 树莓派 torch 的 conv 不可靠）；torch 正常时可用 cnn")
+    ap.add_argument("--model", default="mlp", choices=["mlp", "cnn", "deepcnn", "resnet"],
+                    help="模型（须与服务器一致）；默认 mlp；CIFAR-10 建议 deepcnn/resnet")
     ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
-                    help="输入通道数（须与服务器一致）；用 CNN 时在 armv7l 树莓派上设 3 绕开单通道卷积 bug")
-    ap.add_argument("--dataset", default="mnist")
+                    help="输入通道数（须与服务器一致）；用 CNN 时在 armv7l 树莓派上设 3 绕开单通道卷积 bug；CIFAR-10 须为 3")
+    ap.add_argument("--dataset", default="mnist", choices=["mnist", "cifar10"],
+                    help="数据集（须与服务器一致）；cifar10 须配 --channels 3")
+    ap.add_argument("--norm", default="group", choices=["batch", "group"],
+                    help="deepcnn/resnet 归一化（须与服务器一致）：group(FL 推荐，对 Non-IID 鲁棒) | batch")
     ap.add_argument("--partition", default="iid",
                     choices=["iid", "shard", "noniid", "dirichlet", "imbalanced"],
                     help="数据划分方式：iid | shard(=noniid) | dirichlet | imbalanced（须三端一致）")

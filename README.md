@@ -3,7 +3,9 @@
 > 硬件课程设计 · 在不上传原始数据的前提下，多台树莓派作为边缘节点本地训练 MNIST，
 > 仅上传模型参数到中心服务器做 **FedAvg 加权聚合**，并实时可视化全局模型准确率/损失。
 >
-> **发挥部分**额外实现了 Non-IID & 样本不均衡对 FedAvg 的系统性研究（单机仿真，6 个对比场景）。
+> **发挥部分**额外实现了：① Non-IID & 样本不均衡对 FedAvg 的系统性研究（单机仿真，6 个对比场景）；
+> ② 扩展至 **CIFAR-10 彩色数据集 + 更深层网络（DeepCNN / ResNet-20）** 的联邦训练，并探讨
+> 联邦场景下 **GroupNorm 替代 BatchNorm** 的关键实现差异。
 
 ---
 
@@ -17,9 +19,10 @@
 6. [运行参数说明](#6-运行参数说明)
 7. [输出结果说明](#7-输出结果说明)
 8. [发挥部分：Non-IID 与样本不均衡研究](#8-发挥部分non-iid-与样本不均衡研究)
-9. [常见问题排查](#9-常见问题排查)
-10. [对应任务书要求](#10-对应任务书要求)
-11. [快速参考卡（所有场景）](#快速参考卡所有场景)
+9. [发挥部分：CIFAR-10 + 深层网络（DeepCNN / ResNet）](#9-发挥部分cifar-10--深层网络deepcnn--resnet)
+10. [常见问题排查](#10-常见问题排查)
+11. [对应任务书要求](#11-对应任务书要求)
+12. [快速参考卡（所有场景）](#快速参考卡所有场景)
 
 ---
 
@@ -68,8 +71,8 @@ $$W_{global} = \sum_{k=1}^{K} \frac{n_k}{\sum n} \cdot W_k$$
 FL_26/
 ├── common/                     # 公共模块（服务器与客户端共享）
 │   ├── config.py               #   超参数 Config 数据类
-│   ├── model.py                #   MLP / SimpleCNN 模型定义
-│   ├── data.py                 #   MNIST 加载 + 四种联邦分片方法
+│   ├── model.py                #   MLP / SimpleCNN / DeepCNN / ResNet-20 模型 + norm_layer
+│   ├── data.py                 #   MNIST/CIFAR-10 加载(load_dataset) + 四种联邦分片方法
 │   │                           #     partition_iid()              IID 等分
 │   │                           #     partition_noniid()           McMahan shard 法
 │   │                           #     partition_imbalanced()       IID + 数量不均衡 ★新增
@@ -285,10 +288,11 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 | `--port` | `5000` | 端口 |
 | `--rounds` | `15` | 通信轮数 T |
 | `--num-clients` | `2` | 客户端数量（= 树莓派数量） |
-| `--model` | `mlp` | `mlp` 或 `cnn` |
-| `--channels` | `1` | 输入通道数（CNN 在 armv7l Pi 上设 `3`） |
-| `--dataset` | `mnist` | 数据集 |
-| `--data-dir` | `./data` | MNIST 存放路径 |
+| `--model` | `mlp` | `mlp` / `cnn` / `deepcnn` / `resnet`（CIFAR-10 建议后两者） |
+| `--channels` | `1` | 输入通道数（CNN 在 armv7l Pi 上设 `3`；CIFAR-10 须为 `3`） |
+| `--dataset` | `mnist` | `mnist` / `cifar10` |
+| `--norm` | `group` | deepcnn/resnet 归一化：`group`(FL 推荐) / `batch` |
+| `--data-dir` | `./data` | 数据集存放路径 |
 | `--results-dir` | `./results` | 输出目录 |
 | `--seed` | `42` | 随机种子 |
 
@@ -303,8 +307,10 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 | `--local-steps` | `0` | >0 时每轮只训 N 个 batch（控时） |
 | `--batch-size` | `32` | 批大小 |
 | `--lr` | `0.01` | SGD 学习率 |
-| `--model` | `mlp` | 须与服务器一致 |
-| `--channels` | `1` | 须与服务器一致 |
+| `--model` | `mlp` | `mlp`/`cnn`/`deepcnn`/`resnet`，须与服务器一致 |
+| `--channels` | `1` | 须与服务器一致（CIFAR-10 须为 `3`） |
+| `--dataset` | `mnist` | `mnist`/`cifar10`，须与服务器一致 |
+| `--norm` | `group` | deepcnn/resnet 归一化 `group`/`batch`，须与服务器一致 |
 | `--partition` | `iid` | 数据划分：`iid` / `shard`(=`noniid`) / `dirichlet` / `imbalanced` |
 | `--classes-per-client` | `2` | **shard 方式**：每客户端分到的类别数（越小越 Non-IID） |
 | `--alpha` | `0.5` | **dirichlet 方式**：浓度参数（0.1 高度异质 / 0.5 中度 / 越大越接近 IID） |
@@ -325,7 +331,7 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 
 | 文件 | 说明 |
 |------|------|
-| `results/global_model.pth` | 最新全局模型 checkpoint，含 `{state_dict, model, dataset, round, accuracy}` |
+| `results/global_model.pth` | 最新全局模型 checkpoint，含 `{state_dict, model, dataset, channels, norm, round, accuracy}` |
 | `results/metrics.csv` | 每轮 `round, accuracy, loss, elapsed_sec` |
 | `results/curves.png` | 训练完成后自动生成的准确率/损失曲线 |
 | 网页看板 `:5000/` | 实时轮次、准确率/损失曲线、各客户端状态 |
@@ -343,12 +349,13 @@ import torch
 from common.model import build_model
 
 ckpt = torch.load("results/global_model.pth", map_location="cpu")
-model = build_model(ckpt["model"], ckpt["dataset"])
+model = build_model(ckpt["model"], ckpt["dataset"],
+                    channels=ckpt.get("channels"), norm=ckpt.get("norm", "group"))
 model.load_state_dict(ckpt["state_dict"])
 model.eval()
 ```
 
-**预期指标**：MLP 模型默认 15 轮 ≈ **97%+**，CNN（3通道）≈ **99%+**。
+**预期指标**：MNIST：MLP 默认 15 轮 ≈ **97%+**，CNN（3通道）≈ **99%+**。CIFAR-10：DeepCNN/ResNet-20 约 30 轮 ≈ **80%+**（联邦、2 客户端 IID）。
 
 ---
 
@@ -501,7 +508,78 @@ python scripts/simulate_noniid.py [选项]
 
 ---
 
-## 9. 常见问题排查
+## 9. 发挥部分：CIFAR-10 + 深层网络（DeepCNN / ResNet）
+
+### 9.1 研究目标
+
+把数据集从 MNIST（灰度、28×28、近线性可分）扩展到 **CIFAR-10**（10 类彩色自然图、32×32×3、类内差异大、背景复杂），并对**更深层的网络**实现联邦训练，验证 FedAvg 在「更难的数据 + 更深的模型」下依然能稳定聚合收敛。整套联邦协议（同步 FedAvg、参数序列化、看板）完全复用，无需改动。
+
+### 9.2 新增的深层模型（均在 [common/model.py](common/model.py)）
+
+| 模型名 | 结构 | 深度 | 适用 | 说明 |
+|--------|------|------|------|------|
+| `deepcnn` | VGG 风格 3 段 `[conv-norm-relu]×2 + pool` + FC | 6 卷积层 | CIFAR-10（Pi 也可） | 通道 64→128→256，含 Dropout(0.5)，比 SimpleCNN 更深、表达力更强 |
+| `resnet` | CIFAR 版 ResNet-20（`6n+2`, n=3），3 组残差层 + 跳连 | ~20 层 | CIFAR-10 | 残差跳连解决深层退化/梯度消失，演示「带 shortcut 的深网络也能稳定 FedAvg」 |
+
+`build_model(name, dataset, channels, norm)` 按数据集自适应输入通道（mnist=1 / cifar10=3）与尺寸（28 / 32）。两个深层模型沿用现有 `mlp` / `cnn` 同一工厂，三端只需指定相同的 `--model` 即可。
+
+### 9.3 联邦学习的关键实现差异：GroupNorm vs BatchNorm
+
+深层网络需要归一化层稳定训练。但 **BatchNorm 在联邦 + Non-IID 下有固有缺陷**：
+
+- BN 维护 `running_mean/var` 并写入 `state_dict`。Non-IID 下各客户端本地 batch 分布差异巨大 → 各自的 BN 统计量严重发散；FedAvg 直接加权平均这些发散的 buffer，得到的全局统计量**与任何客户端都不匹配**，推理时归一化错位、准确率下降（即 FedBN / "Non-IID quagmire" 现象）。
+- **GroupNorm** 在单样本内按通道分组归一化，**与 batch 组成无关、不维护 running 统计量** → 对 Non-IID 天然鲁棒，且 FedAvg 只平均可学习参数，聚合更干净。
+
+因此本项目把归一化层做成可配置 `--norm {batch,group}`，**默认 `group`**（契合联邦场景）；保留 `batch` 用于对照实验。`--norm` 须三端一致。
+
+### 9.4 运行（PC 单机多开，先跑通）
+
+```bash
+conda activate FL
+cd FL_26
+
+# 1. 下载 CIFAR-10（仅首次，约 170 MB；落盘到 data/cifar-10-batches-py/）
+python scripts/prepare_data.py cifar10
+
+# 2. 服务器（DeepCNN + GroupNorm，30 轮）
+python -m server.fl_server --dataset cifar10 --model deepcnn --channels 3 \
+    --norm group --rounds 30 --num-clients 2
+
+# 3. 两个客户端（另开两个终端，超参建议 lr=0.05 batch=64）
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
+    --dataset cifar10 --model deepcnn --channels 3 --norm group \
+    --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
+    --dataset cifar10 --model deepcnn --channels 3 --norm group \
+    --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
+
+# 换更深的 ResNet-20：三端把 --model deepcnn 改为 --model resnet 即可
+```
+
+> ⚠ **三端一致**：`--dataset cifar10 --model <deepcnn|resnet> --channels 3 --norm <group|batch>` 必须在服务器与所有客户端完全相同。CIFAR-10 为彩色三通道，`--channels` 必须为 3。
+
+### 9.5 BN vs GN 对照实验（报告亮点）
+
+固定 `--model resnet`，对比 `{IID, Non-IID} × {group, batch}`，直观展示「IID 下 BN≈GN；Non-IID 下 GN 明显优于 BN」：
+
+```bash
+# 客户端加 --partition dirichlet --alpha 0.1 即切到高度 Non-IID（服务器不变）
+# 例：Non-IID + BatchNorm（与 Non-IID + GroupNorm 对比）
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
+    --dataset cifar10 --model resnet --channels 3 --norm batch \
+    --partition dirichlet --alpha 0.1 --num-clients 2 --lr 0.05
+```
+
+### 9.6 树莓派部署注意（armv7l）
+
+- CIFAR-10 原生 3 通道，**不触发单通道卷积 bug**；但 ResNet/深层卷积在 armv7l 上偏慢。
+- 建议 Pi 端：优先 `deepcnn`；ResNet 用 `--local-steps`（如 80）控时、`--rounds` 适当减小；偶发 NaN 时加 `--threads 1`（`fedavg` 的 NaN/Inf 剔除兜底仍生效）。
+- 在 PC `python scripts/prepare_data.py cifar10` 下载后，把 `data/cifar-10-batches-py` 用 scp 拷到各 Pi，避开旧 torchvision 下载源问题。
+- `predict.py` 会从 checkpoint 自动读取 `dataset/channels/norm` 并重建匹配模型，CIFAR-10 模型同样可直接评估。
+
+---
+
+## 10. 常见问题排查
 
 **Q1. 树莓派 torch 安装失败？**
 
@@ -563,7 +641,7 @@ python -c "import matplotlib; print(matplotlib.get_cachedir())"
 
 ---
 
-## 10. 对应任务书要求
+## 11. 对应任务书要求
 
 ### 基础部分
 
@@ -583,6 +661,9 @@ python -c "import matplotlib; print(matplotlib.get_cachedir())"
 | 样本数量不均衡对收敛的影响 | 不均衡 IID 分片（9:1、99:1），对比均衡基准 |
 | 双重非理想（最差情形）研究 | Dirichlet Non-IID + 不均衡数量组合 |
 | 可复现的对比实验 | `simulate_noniid.py` 单机仿真，6 场景，30 轮，输出 CSV + 图表 |
+| **扩展彩色数据集 CIFAR-10** | `load_cifar10` + `load_dataset` 统一入口，含数据增强（见第 9 节） |
+| **更深层网络的联邦训练** | DeepCNN（6 卷积层）/ ResNet-20（残差，约 20 层），三端 `--model` 选择 |
+| **联邦归一化差异（GroupNorm）** | `--norm group/batch` 可配置，默认 GroupNorm，附 BN-vs-GN 对照实验 |
 
 ---
 
@@ -733,6 +814,31 @@ python scripts/simulate_noniid.py --scenarios iid_balanced noniid_dir01 noniid_i
 ```
 
 输出结果在 `results/noniid_research/`：各场景 CSV、`comparison.png`（准确率/损失对比曲线）、`label_dist.png`（标签分布热图）。
+
+---
+
+### 场景 G — 发挥部分·CIFAR-10 + 深层网络（DeepCNN / ResNet-20）
+
+彩色数据集 + 更深网络的联邦训练。三端须一致 `--dataset cifar10 --channels 3 --model <deepcnn|resnet> --norm <group|batch>`（详见第 9 节）。
+
+```bash
+# 下载 CIFAR-10（仅首次，约 170 MB）
+python scripts/prepare_data.py cifar10
+
+# 终端 1：服务器（ResNet-20 + GroupNorm，30 轮）
+python -m server.fl_server --dataset cifar10 --model resnet --channels 3 \
+    --norm group --rounds 30 --num-clients 2
+
+# 终端 2 / 3：两个客户端
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
+    --dataset cifar10 --model resnet --channels 3 --norm group \
+    --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
+    --dataset cifar10 --model resnet --channels 3 --norm group \
+    --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
+```
+
+> 想跑 BN vs GN 对照：把三端 `--norm group` 改成 `--norm batch`，客户端再加 `--partition dirichlet --alpha 0.1` 切到 Non-IID 对比。
 
 ---
 
