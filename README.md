@@ -19,6 +19,7 @@
 8. [发挥部分：Non-IID 与样本不均衡研究](#8-发挥部分non-iid-与样本不均衡研究)
 9. [常见问题排查](#9-常见问题排查)
 10. [对应任务书要求](#10-对应任务书要求)
+11. [快速参考卡（所有场景）](#快速参考卡所有场景)
 
 ---
 
@@ -304,10 +305,17 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 | `--lr` | `0.01` | SGD 学习率 |
 | `--model` | `mlp` | 须与服务器一致 |
 | `--channels` | `1` | 须与服务器一致 |
-| `--partition` | `iid` | `iid` 或 `noniid`（Non-IID 研究时） |
-| `--seed` | `42` | 须与服务器一致 |
+| `--partition` | `iid` | 数据划分：`iid` / `shard`(=`noniid`) / `dirichlet` / `imbalanced` |
+| `--classes-per-client` | `2` | **shard 方式**：每客户端分到的类别数（越小越 Non-IID） |
+| `--alpha` | `0.5` | **dirichlet 方式**：浓度参数（0.1 高度异质 / 0.5 中度 / 越大越接近 IID） |
+| `--ratios` | 无 | **imbalanced 方式**：各客户端样本比例，逗号分隔且和为 1，如 `0.9,0.1` |
+| `--seed` | `42` | 须与所有客户端一致（保证分片确定、不重叠） |
 | `--threads` | `0` | >0 时设置 torch 线程数（armv7l NaN 时可设 1） |
 | `--poll-interval` | `2.0` | 等待下一轮的轮询间隔（秒） |
+
+> ⚠ **三类 Non-IID 划分**（`shard` / `dirichlet` / `imbalanced`）所有客户端必须使用**完全相同**的划分方式、对应参数（`--classes-per-client` / `--alpha` / `--ratios`）和 `--seed`，否则分片会重叠或错位。服务器只在全局测试集评估、不参与划分，无需这些参数。
+>
+> 💡 仅 **2 台树莓派**时，`shard` 方式的类别切分点固定（两端各约 5 个数字），`--classes-per-client` 效果不明显；想连续调节异质程度建议用 `dirichlet` 改 `--alpha`。客户端启动时会打印**本地标签分布**，可据此核对各台 Pi 实际拿到的数据。
 
 ---
 
@@ -578,32 +586,163 @@ python -c "import matplotlib; print(matplotlib.get_cachedir())"
 
 ---
 
-## 快速参考卡
+## 快速参考卡（所有场景）
+
+所有命令均在 `fl/` 目录下执行。Windows 上把 `python` 替换为 `& "F:\ANACONDA\envs\FL\python.exe"`。
 
 ```bash
-# ── 基础实验（PC 单机测试）──────────────────────────────────
-python scripts/prepare_data.py                                  # 下载数据（一次）
-python -m server.fl_server --rounds 15 --num-clients 2          # 终端 1：服务器
-python -m client.fl_client --client-id 0                        # 终端 2：客户端 0
-python -m client.fl_client --client-id 1                        # 终端 3：客户端 1
-# 看板：http://127.0.0.1:5000/
+# 下载 MNIST（仅首次，约 50 MB）
+python scripts/prepare_data.py
+```
 
-# ── 真机部署（2 台树莓派）──────────────────────────────────
-python -m server.fl_server --rounds 15 --num-clients 2          # PC 端
+---
+
+### 场景 A — PC 单机自测·MLP（推荐先跑，最稳定）
+
+默认模型，无卷积，不受 armv7l bug 影响，MNIST 约 97%。
+
+```bash
+# 终端 1：服务器
+python -m server.fl_server --rounds 15 --num-clients 2 --model mlp
+
+# 终端 2：客户端 0
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --model mlp
+
+# 终端 3：客户端 1
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model mlp
+```
+
+---
+
+### 场景 B — PC 单机自测·CNN（精度更高，约 99%）
+
+需加 `--channels 3`（把 MNIST 单通道复制为 3 通道，绕过 armv7l 卷积 bug，三端一致）。
+
+```bash
+# 终端 1：服务器
+python -m server.fl_server --rounds 15 --num-clients 2 --model cnn --channels 3
+
+# 终端 2：客户端 0
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --model cnn --channels 3
+
+# 终端 3：客户端 1
+python -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --model cnn --channels 3
+```
+
+---
+
+### 场景 C — 真机部署·MLP（PC 服务器 + 2 台树莓派）
+
+```bash
+# PC 端（终端 1）
+python -m server.fl_server --rounds 15 --num-clients 2 --model mlp
+
+# 树莓派 #1（SSH 连入后执行）
 python3 -m client.fl_client --server http://<PC_IP>:5000 \
-    --client-id 0 --num-clients 2                               # 树莓派 #1
+    --client-id 0 --num-clients 2 --model mlp --seed 42
+
+# 树莓派 #2（SSH 连入后执行）
 python3 -m client.fl_client --server http://<PC_IP>:5000 \
-    --client-id 1 --num-clients 2                               # 树莓派 #2
+    --client-id 1 --num-clients 2 --model mlp --seed 42
+```
 
-# ── 发挥部分：Non-IID 研究仿真 ──────────────────────────────
-python scripts/simulate_noniid.py                               # 全部 6 场景，30 轮
-python scripts/simulate_noniid.py --rounds 5 \                  # 快速验证
-    --scenarios iid_balanced noniid_dir01
-# 结果：results/noniid_research/
+---
 
-# ── 工具脚本 ──────────────────────────────────────────────
-python scripts/predict.py                                       # 推理 + 精度验证
-python scripts/check_torch.py                                   # PyTorch 环境检测
-python scripts/check_data.py                                    # 数据分片验证
-python scripts/test_3channel.py                                 # CNN 单/三通道对比
+### 场景 D — 真机部署·CNN 3 通道（精度最高）
+
+```bash
+# PC 端（终端 1）
+python -m server.fl_server --rounds 15 --num-clients 2 --model cnn --channels 3
+
+# 树莓派 #1
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 0 --num-clients 2 --model cnn --channels 3 --seed 42
+
+# 树莓派 #2
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 1 --num-clients 2 --model cnn --channels 3 --seed 42
+```
+
+---
+
+### 场景 E — 真机三类 Non-IID 实验（树莓派可直接选择）
+
+三种划分方式均可在真机客户端通过命令行选择。**所有树莓派的划分方式、对应参数与 `--seed` 必须完全一致**；服务器无需改动（始终用 `--rounds`/`--num-clients`/`--model` 即可）。启动后每台 Pi 会打印自己的本地标签分布，便于核对。
+
+**E1 · McMahan shard 法**（每客户端只见少数类别，硬性 Non-IID）：
+
+```bash
+# 服务器：python -m server.fl_server --rounds 20 --num-clients 2 --model mlp
+# 树莓派 #1
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 0 --num-clients 2 --model mlp \
+    --partition shard --classes-per-client 2 --seed 42
+# 树莓派 #2
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 1 --num-clients 2 --model mlp \
+    --partition shard --classes-per-client 2 --seed 42
+```
+
+**E2 · Dirichlet 软 Non-IID**（用 `--alpha` 连续调节异质程度，2 台 Pi 时最推荐）：
+
+```bash
+# 高度异质 alpha=0.1（想要中度异质改为 0.5）
+# 树莓派 #1
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 0 --num-clients 2 --model mlp \
+    --partition dirichlet --alpha 0.1 --seed 42
+# 树莓派 #2
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 1 --num-clients 2 --model mlp \
+    --partition dirichlet --alpha 0.1 --seed 42
+```
+
+**E3 · 样本数量不均衡**（内容 IID，数量按 `--ratios` 倾斜，如 9:1）：
+
+```bash
+# 树莓派 #1（分到 90% 数据）
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 0 --num-clients 2 --model mlp \
+    --partition imbalanced --ratios 0.9,0.1 --seed 42
+# 树莓派 #2（分到 10% 数据）
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 1 --num-clients 2 --model mlp \
+    --partition imbalanced --ratios 0.9,0.1 --seed 42
+```
+
+> `--partition noniid` 仍作为 `shard` 的别名保留（向后兼容旧命令）。
+> CNN 模式同理，三端再加 `--model cnn --channels 3` 即可。
+> 想在**单机**一次性对比全部 6 个场景（含双重非理想），见下方场景 F。
+
+---
+
+### 场景 F — 发挥部分·Non-IID 单机仿真（6 场景对比，无需网络）
+
+```bash
+# 运行全部 6 个场景（默认 30 轮，约 30–50 分钟）
+python scripts/simulate_noniid.py
+
+# 快速验证（2 个场景，5 轮，约 2 分钟）
+python scripts/simulate_noniid.py --rounds 5 --scenarios iid_balanced noniid_dir01
+
+# 自定义轮数 / 模型
+python scripts/simulate_noniid.py --rounds 30 --model mlp --local-epochs 1
+
+# 仅跑关键场景（IID 基准 + 高度 Non-IID + 双重非理想）
+python scripts/simulate_noniid.py --scenarios iid_balanced noniid_dir01 noniid_imb
+```
+
+输出结果在 `results/noniid_research/`：各场景 CSV、`comparison.png`（准确率/损失对比曲线）、`label_dist.png`（标签分布热图）。
+
+---
+
+### 工具脚本
+
+```bash
+python scripts/predict.py            # 加载全局模型，在测试集评估 + 展示样例预测
+python scripts/check_torch.py        # 检测 PyTorch 版本与基本能力（在树莓派上运行）
+python scripts/check_data.py         # 验证各客户端数据分片结果（样本数、类别分布）
+python scripts/test_3channel.py      # 对比 1 vs 3 通道 CNN 在本机的表现（定位 armv7l bug）
+python scripts/diagnose_forward.py   # 前向传播逐层 NaN/Inf 诊断
+python scripts/stress_conv.py        # 卷积层压力测试（armv7l bug 定位）
 ```

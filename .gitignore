@@ -19,12 +19,10 @@ ENV/
 data/
 !data/.gitkeep
 
-# ===== 训练产物 =====
-results/*.pth
-results/*.pt
-results/*.png
-results/*.csv
-results/*.log
+# ===== 训练产物（全部为运行生成，含 noniid_research/ 等子目录，不入库）=====
+# 用 results/* 而非 results/，否则无法用 !保留 .gitkeep（git 不能反选被忽略目录内的文件）
+results/*
+!results/.gitkeep
 
 # ===== 日志/临时文件 =====
 *.log
@@ -33,6 +31,7 @@ results/*.log
 *.swp
 *~
 *.zip
+scripts/_tmp_*
 
 # ===== IDE / 编辑器 =====
 .vscode/

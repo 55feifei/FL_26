@@ -24,7 +24,10 @@ class Config:
     model: str = "mlp"            # "cnn" | "mlp"（默认 mlp：部分 armv7l 树莓派 torch 构建的 conv 不可靠）
     channels: int = 1             # 输入通道数；CNN 在 armv7l Pi 上需设 3（绕开单通道卷积 bug）
     dataset: str = "mnist"        # 预留扩展: "mnist" | "cifar10"
-    partition: str = "iid"        # 预留扩展: "iid" | "noniid"
+    partition: str = "iid"        # "iid" | "shard"(=noniid) | "dirichlet" | "imbalanced"
+    classes_per_client: int = 2   # shard 方式：每客户端分到的类别数（越小越 Non-IID）
+    alpha: float = 0.5            # dirichlet 方式：浓度参数（越小越 Non-IID）
+    ratios: tuple = None          # imbalanced 方式：各客户端样本比例，如 (0.9, 0.1)
     data_dir: str = "./data"
     seed: int = 42
 

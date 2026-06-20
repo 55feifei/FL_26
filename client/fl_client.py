@@ -23,11 +23,16 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
+import numpy as np
 import torch
 
 from common.config import Config
 from common.model import build_model
-from common.data import load_mnist, partition_iid, partition_noniid, make_loader
+from common.data import (
+    load_mnist, make_loader,
+    partition_iid, partition_noniid,
+    partition_noniid_dirichlet, partition_imbalanced,
+)
 from common.serialize import state_dict_to_bytes, bytes_to_state_dict
 
 
@@ -61,23 +66,79 @@ def local_train(model, loader, cfg, device):
     return last_loss, steps, finite
 
 
+def parse_ratios(text):
+    """把 '0.9,0.1' 解析成 [0.9, 0.1]。"""
+    try:
+        return [float(x) for x in text.split(",")]
+    except ValueError:
+        raise SystemExit(f"--ratios 解析失败：'{text}'，应形如 0.9,0.1")
+
+
+def validate_partition(partition, num_clients, ratios):
+    """对依赖额外参数的划分方式做前置校验，参数不合法时给出明确报错。"""
+    if partition == "imbalanced":
+        if ratios is None:
+            raise SystemExit("--partition imbalanced 需配合 --ratios，如 --ratios 0.9,0.1")
+        if len(ratios) != num_clients:
+            raise SystemExit(f"--ratios 长度({len(ratios)})须等于 --num-clients({num_clients})")
+        if abs(sum(ratios) - 1.0) > 1e-6:
+            raise SystemExit(f"--ratios 之和应为 1.0（当前为 {sum(ratios)}）")
+
+
+def describe_partition(cfg):
+    """生成人类可读的划分描述，便于在多台 Pi 上核对参数是否一致。"""
+    if cfg.partition in ("shard", "noniid"):
+        return f"shard(每客户端{cfg.classes_per_client}类)"
+    if cfg.partition == "dirichlet":
+        return f"dirichlet(alpha={cfg.alpha})"
+    if cfg.partition == "imbalanced":
+        return f"imbalanced(ratios={cfg.ratios})"
+    return "iid"
+
+
 def build_local_loader(cfg, client_id):
-    """加载完整数据集后，按 client_id 取出本机的私有分片。"""
+    """加载完整数据集后，按 client_id 取出本机的私有分片。
+
+    支持四种划分方式（由 cfg.partition 选择），各客户端必须用【相同的划分参数与
+    seed】，才能保证分片确定、互不重叠：
+      iid        —— 随机等分（内容与数量都均衡）
+      shard      —— McMahan shard 法，每客户端只见 classes_per_client 个类别
+      dirichlet  —— Dirichlet(alpha) 软 Non-IID，alpha 越小越异质
+      imbalanced —— 内容 IID 但样本数量按 ratios 不均衡
+    返回 (loader, 本地样本数, 本地标签分布)。
+    """
     train_set = load_mnist(cfg.data_dir, train=True, download=True, channels=cfg.channels)
-    if cfg.partition == "noniid":
-        subset = partition_noniid(train_set, cfg.num_clients, client_id, seed=cfg.seed)
+    p = cfg.partition
+    if p in ("shard", "noniid"):
+        subset = partition_noniid(train_set, cfg.num_clients, client_id,
+                                  classes_per_client=cfg.classes_per_client, seed=cfg.seed)
+    elif p == "dirichlet":
+        subset = partition_noniid_dirichlet(train_set, cfg.num_clients, client_id,
+                                            alpha=cfg.alpha, seed=cfg.seed)
+    elif p == "imbalanced":
+        subset = partition_imbalanced(train_set, cfg.num_clients, client_id,
+                                      ratios=list(cfg.ratios), seed=cfg.seed)
     else:
         subset = partition_iid(train_set, cfg.num_clients, client_id, seed=cfg.seed)
     loader = make_loader(subset, cfg.batch_size, shuffle=True)
-    return loader, len(subset)
+
+    # 统计本地标签分布，便于核对 Non-IID 效果
+    labels = np.asarray(train_set.targets)[subset.indices]
+    uniq, cnts = np.unique(labels, return_counts=True)
+    label_dist = {int(k): int(v) for k, v in zip(uniq, cnts)}
+    return loader, len(subset), label_dist
 
 
 def run(args):
+    ratios = parse_ratios(args.ratios) if args.ratios else None
+    validate_partition(args.partition, args.num_clients, ratios)
+
     cfg = Config(
         num_clients=args.num_clients, local_epochs=args.local_epochs,
         local_steps=args.local_steps, batch_size=args.batch_size, lr=args.lr,
         model=args.model, channels=args.channels, dataset=args.dataset,
         partition=args.partition, data_dir=args.data_dir, seed=args.seed,
+        classes_per_client=args.classes_per_client, alpha=args.alpha, ratios=ratios,
     )
     device = torch.device("cpu")
     if getattr(args, "threads", 0) and args.threads > 0:
@@ -85,9 +146,10 @@ def run(args):
         print(f"[client {args.client_id}] torch 线程数设为 {args.threads}", flush=True)
 
     print(f"[client {args.client_id}] 准备本地数据分片 ...", flush=True)
-    loader, n_local = build_local_loader(cfg, args.client_id)
+    loader, n_local, label_dist = build_local_loader(cfg, args.client_id)
     print(f"[client {args.client_id}] 本地样本数={n_local}  服务器={args.server}  "
-          f"模型={cfg.model}  分布={cfg.partition}", flush=True)
+          f"模型={cfg.model}  分布={describe_partition(cfg)}", flush=True)
+    print(f"[client {args.client_id}] 本地标签分布={label_dist}", flush=True)
 
     model = build_model(cfg.model, cfg.dataset, channels=cfg.channels).to(device)
     last_trained = 0  # 已经完成训练的最大轮次
@@ -165,7 +227,15 @@ def main():
     ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
                     help="输入通道数（须与服务器一致）；用 CNN 时在 armv7l 树莓派上设 3 绕开单通道卷积 bug")
     ap.add_argument("--dataset", default="mnist")
-    ap.add_argument("--partition", default="iid", choices=["iid", "noniid"])
+    ap.add_argument("--partition", default="iid",
+                    choices=["iid", "shard", "noniid", "dirichlet", "imbalanced"],
+                    help="数据划分方式：iid | shard(=noniid) | dirichlet | imbalanced（须三端一致）")
+    ap.add_argument("--classes-per-client", type=int, default=2,
+                    help="shard 方式：每客户端分到的类别数（1 极度异质 … 越大越接近 IID）")
+    ap.add_argument("--alpha", type=float, default=0.5,
+                    help="dirichlet 方式：浓度参数（0.1 高度异质 / 0.5 中度 / 越大越接近 IID）")
+    ap.add_argument("--ratios", type=str, default=None,
+                    help="imbalanced 方式：各客户端样本比例，逗号分隔且和为 1，如 0.9,0.1")
     ap.add_argument("--data-dir", default="./data")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--threads", type=int, default=0,
