@@ -21,9 +21,10 @@ class Config:
     momentum: float = 0.9
 
     # ===== 模型 / 数据 =====
-    model: str = "mlp"            # "cnn" | "mlp"（默认 mlp：部分 armv7l 树莓派 torch 构建的 conv 不可靠）
-    channels: int = 1             # 输入通道数；CNN 在 armv7l Pi 上需设 3（绕开单通道卷积 bug）
-    dataset: str = "mnist"        # 预留扩展: "mnist" | "cifar10"
+    model: str = "mlp"            # "mlp" | "cnn" | "deepcnn" | "resnet"（默认 mlp：部分 armv7l 树莓派 torch 构建的 conv 不可靠）
+    channels: int = 1             # 输入通道数；CNN 在 armv7l Pi 上需设 3（绕开单通道卷积 bug）；CIFAR-10 须为 3
+    dataset: str = "mnist"        # "mnist" | "cifar10"
+    norm: str = "group"           # deepcnn/resnet 归一化方式："group"(FL 推荐) | "batch"
     partition: str = "iid"        # "iid" | "shard"(=noniid) | "dirichlet" | "imbalanced"
     classes_per_client: int = 2   # shard 方式：每客户端分到的类别数（越小越 Non-IID）
     alpha: float = 0.5            # dirichlet 方式：浓度参数（越小越 Non-IID）
