@@ -265,14 +265,17 @@ def main():
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--rounds", type=int, default=15, help="通信轮数 T")
     ap.add_argument("--num-clients", type=int, default=2, help="客户端数量 = 树莓派数量")
-    ap.add_argument("--model", default="mlp", choices=["mlp", "cnn", "deepcnn", "resnet"],
-                    help="模型（须与客户端一致）；默认 mlp；CIFAR-10 建议 deepcnn/resnet")
+    ap.add_argument("--model", default="mlp",
+                    choices=["mlp", "cnn", "deepcnn", "resnet", "mobilenet", "squeezenet"],
+                    help="模型（须与客户端一致）；默认 mlp；CIFAR-10 建议 deepcnn/resnet；"
+                         "mobilenet/squeezenet 为轻量化网络（发挥任务三）")
     ap.add_argument("--dataset", default="mnist", choices=["mnist", "cifar10"],
                     help="数据集（须与客户端一致）；cifar10 须配 --channels 3")
     ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
-                    help="输入通道数（须与客户端一致）；CNN 在 armv7l 树莓派上设 3 绕开单通道卷积 bug；CIFAR-10 须为 3")
+                    help="输入通道数（须与客户端一致）；CNN/MobileNet/SqueezeNet 在 armv7l 树莓派上设 3 绕开单通道卷积 bug；CIFAR-10 须为 3")
     ap.add_argument("--norm", default="group", choices=["batch", "group"],
-                    help="deepcnn/resnet 归一化（须与客户端一致）：group(FL 推荐，对 Non-IID 鲁棒) | batch")
+                    help="deepcnn/resnet/mobilenet/squeezenet 归一化（须与客户端一致）："
+                         "group(FL 推荐，对 Non-IID 鲁棒) | batch")
     ap.add_argument("--data-dir", default="./data")
     ap.add_argument("--results-dir", default="./results",
                     help="产物根目录；默认会在其下按实验名建子目录 {dataset}_{model}[_{norm}]")
@@ -285,7 +288,7 @@ def main():
     results_dir = args.results_dir
     if not args.flat_results:
         tag = f"{args.dataset}_{args.model}"
-        if args.model in ("deepcnn", "resnet"):
+        if args.model in ("deepcnn", "resnet", "mobilenet", "squeezenet"):
             tag += f"_{args.norm}"
         results_dir = os.path.join(args.results_dir, tag)
 
@@ -299,7 +302,7 @@ def main():
     print("正在加载测试集并初始化全局模型 ...", flush=True)
     server = FLServer(cfg)
     print("=" * 48)
-    norm_info = f"  归一化={cfg.norm}" if cfg.model in ("deepcnn", "resnet") else ""
+    norm_info = f"  归一化={cfg.norm}" if cfg.model in ("deepcnn", "resnet", "mobilenet", "squeezenet") else ""
     print(f"联邦学习服务器已启动：模型={cfg.model}  数据集={cfg.dataset}{norm_info}")
     print(f"等待 {cfg.num_clients} 个客户端，共进行 {cfg.rounds} 轮 FedAvg")
     print(f"产物目录：{os.path.abspath(cfg.results_dir)}  （模型/指标/曲线均存此）")

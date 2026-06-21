@@ -228,14 +228,17 @@ def main():
     ap.add_argument("--local-steps", type=int, default=0, help=">0 时每轮只训练这么多 batch（控时）")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=0.01)
-    ap.add_argument("--model", default="mlp", choices=["mlp", "cnn", "deepcnn", "resnet"],
-                    help="模型（须与服务器一致）；默认 mlp；CIFAR-10 建议 deepcnn/resnet")
+    ap.add_argument("--model", default="mlp",
+                    choices=["mlp", "cnn", "deepcnn", "resnet", "mobilenet", "squeezenet"],
+                    help="模型（须与服务器一致）；默认 mlp；CIFAR-10 建议 deepcnn/resnet；"
+                         "mobilenet/squeezenet 为轻量化网络（发挥任务三）")
     ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
-                    help="输入通道数（须与服务器一致）；用 CNN 时在 armv7l 树莓派上设 3 绕开单通道卷积 bug；CIFAR-10 须为 3")
+                    help="输入通道数（须与服务器一致）；CNN/MobileNet/SqueezeNet 在 armv7l 树莓派上设 3 绕开单通道卷积 bug；CIFAR-10 须为 3")
     ap.add_argument("--dataset", default="mnist", choices=["mnist", "cifar10"],
                     help="数据集（须与服务器一致）；cifar10 须配 --channels 3")
     ap.add_argument("--norm", default="group", choices=["batch", "group"],
-                    help="deepcnn/resnet 归一化（须与服务器一致）：group(FL 推荐，对 Non-IID 鲁棒) | batch")
+                    help="deepcnn/resnet/mobilenet/squeezenet 归一化（须与服务器一致）："
+                         "group(FL 推荐，对 Non-IID 鲁棒) | batch")
     ap.add_argument("--partition", default="iid",
                     choices=["iid", "shard", "noniid", "dirichlet", "imbalanced"],
                     help="数据划分方式：iid | shard(=noniid) | dirichlet | imbalanced（须三端一致）")

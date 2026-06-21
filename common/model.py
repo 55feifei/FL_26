@@ -7,6 +7,12 @@
             比 SimpleCNN 更深、表达力更强（发挥任务）。
 - ResNet（ResNet-style 残差网络，约 20 层）：带跳连的更深网络，CIFAR-10 上精度
             最高，演示"对更深层网络做联邦训练"（发挥任务核心）。
+- MobileNet（CIFAR-/MNIST-scaled MobileNetV1，width=0.5）：用 3x3 深度可分离卷积 +
+            1x1 逐点卷积替代标准卷积，参数与计算量大幅下降，演示"轻量化网络在
+            资源受限边缘端（树莓派）上的训练效率"（发挥任务三）。
+- SqueezeNet（Fire 模块版）：用 squeeze 1x1 压缩通道 + expand 1x1/3x3 并行扩展的
+            Fire 模块堆叠，分类头用 1x1 conv + 全局池化替代 FC，参数极少，
+            与 MobileNet 一起作为"轻量化网络"代表（发挥任务三）。
 
 build_model() 是统一工厂，按 (name, dataset) 自动适配输入通道/尺寸与类别数。
 """
@@ -169,6 +175,127 @@ class ResNet(nn.Module):
         return self.fc(out)
 
 
+class DWSepBlock(nn.Module):
+    """深度可分离卷积块：3x3 深度卷积 (groups=cin) + 1x1 逐点卷积。
+
+    用一对"分组卷积 + 1x1 卷积"近似标准卷积，计算量约从 D^2·Cin·Cout 降到
+    D^2·Cin + Cin·Cout，是 MobileNetV1 的核心轻量化技巧。
+    """
+
+    def __init__(self, cin, cout, stride=1, norm="group"):
+        super().__init__()
+        self.dw = nn.Conv2d(cin, cin, 3, stride=stride, padding=1, groups=cin, bias=False)
+        self.n1 = norm_layer(cin, norm)
+        self.pw = nn.Conv2d(cin, cout, 1, bias=False)
+        self.n2 = norm_layer(cout, norm)
+
+    def forward(self, x):
+        x = F.relu(self.n1(self.dw(x)), inplace=True)
+        x = F.relu(self.n2(self.pw(x)), inplace=True)
+        return x
+
+
+class MobileNet(nn.Module):
+    """MobileNetV1 风格的轻量化网络（CIFAR-/MNIST-scaled）。
+
+    结构：3x3 stem conv -> 7 个深度可分离块 -> 全局平均池化 -> 线性分类头。
+    宽度系数 width=0.5：把所有通道砍半，使最终参数量与 SimpleCNN（~207k）同量级，
+    真正体现"轻量化"。stem stride=1 保留输入分辨率；总共 3 次 stride=2 把 28x28
+    压到 ~3x3（CIFAR 32x32 -> 4x4），末端 adaptive_avg_pool 把空间维度收成 1x1。
+    """
+
+    # (cout, stride)
+    CFG = [(64, 1), (128, 2), (128, 1), (256, 2), (256, 1), (512, 2), (512, 1)]
+
+    def __init__(self, in_channels=3, num_classes=10, width=0.5, norm="group"):
+        super().__init__()
+
+        def ch(c):
+            # 取 max(8, ...) 保证最少有 8 通道，并向上取整到 8 的倍数便于 GroupNorm 分组
+            return max(8, int(round(c * width / 8)) * 8)
+
+        stem_c = ch(32)
+        layers = [
+            nn.Conv2d(in_channels, stem_c, 3, stride=1, padding=1, bias=False),
+            norm_layer(stem_c, norm),
+            nn.ReLU(inplace=True),
+        ]
+        cin = stem_c
+        for cout, stride in self.CFG:
+            cout_w = ch(cout)
+            layers.append(DWSepBlock(cin, cout_w, stride=stride, norm=norm))
+            cin = cout_w
+        self.features = nn.Sequential(*layers)
+        self.classifier = nn.Linear(cin, num_classes)
+
+    def forward(self, x):
+        x = self.features(x)
+        x = F.adaptive_avg_pool2d(x, 1)
+        x = torch.flatten(x, 1)
+        return self.classifier(x)
+
+
+class Fire(nn.Module):
+    """SqueezeNet Fire 模块：squeeze(1x1) -> expand(1x1) ‖ expand(3x3) 沿通道拼接。
+
+    squeeze 层先用 1x1 卷积把通道数降到 sq；expand 分两支：1x1 conv 输出 ex1 通道、
+    3x3 conv 输出 ex3 通道，最后 cat 得到 ex1+ex3 通道。等价于"先瘦身再分头扩张"，
+    用大量 1x1 卷积换 3x3 卷积来压参数量，是 SqueezeNet 的核心思想。
+    """
+
+    def __init__(self, cin, sq, ex1, ex3, norm="group"):
+        super().__init__()
+        self.squeeze = nn.Conv2d(cin, sq, 1, bias=False)
+        self.sn = norm_layer(sq, norm)
+        self.expand1 = nn.Conv2d(sq, ex1, 1, bias=False)
+        self.e1n = norm_layer(ex1, norm)
+        self.expand3 = nn.Conv2d(sq, ex3, 3, padding=1, bias=False)
+        self.e3n = norm_layer(ex3, norm)
+
+    def forward(self, x):
+        x = F.relu(self.sn(self.squeeze(x)), inplace=True)
+        out1 = F.relu(self.e1n(self.expand1(x)), inplace=True)
+        out3 = F.relu(self.e3n(self.expand3(x)), inplace=True)
+        return torch.cat([out1, out3], 1)
+
+
+class SqueezeNet(nn.Module):
+    """SqueezeNet（CIFAR-/MNIST-scaled，使用 Fire 模块）。
+
+    结构：3x3 stem conv + MaxPool -> 2 Fire(128) + MaxPool -> 2 Fire(256) + MaxPool ->
+          2 Fire(384) -> 1x1 conv 投影到 num_classes -> 全局平均池化。
+    分类头用 1x1 conv + 全局池化替代 FC（SqueezeNet 经典做法），让模型几乎全是卷积、
+    参数比含大 FC 头的 SimpleCNN 还少。
+    """
+
+    def __init__(self, in_channels=3, num_classes=10, norm="group"):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, 64, 3, stride=1, padding=1, bias=False),
+            norm_layer(64, norm),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2, ceil_mode=True),    # 28->14 / 32->16
+        )
+        self.fires = nn.Sequential(
+            Fire(64, 16, 64, 64, norm),            # cout = 128
+            Fire(128, 16, 64, 64, norm),           # cout = 128
+            nn.MaxPool2d(2, 2, ceil_mode=True),    # 14->7 / 16->8
+            Fire(128, 32, 128, 128, norm),         # cout = 256
+            Fire(256, 32, 128, 128, norm),         # cout = 256
+            nn.MaxPool2d(2, 2, ceil_mode=True),    # 7->4 / 8->4
+            Fire(256, 48, 192, 192, norm),         # cout = 384
+            Fire(384, 48, 192, 192, norm),         # cout = 384
+        )
+        self.classifier = nn.Conv2d(384, num_classes, 1)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.fires(x)
+        x = self.classifier(x)
+        x = F.adaptive_avg_pool2d(x, 1)
+        return torch.flatten(x, 1)
+
+
 def build_model(name="cnn", dataset="mnist", channels=None, norm="group"):
     """根据名称与数据集构建模型。
 
@@ -177,7 +304,8 @@ def build_model(name="cnn", dataset="mnist", channels=None, norm="group"):
     channels: 显式指定输入通道数（覆盖按 dataset 的推断）。
         某些 armv7l 树莓派 torch 构建的"单通道卷积"反向有 bug（第一层 grad=None/偶发 NaN），
         对 MNIST 把通道复制成 3 即可绕过——此时需 channels=3 使 conv1 与数据通道一致。
-    norm: deepcnn / resnet 的归一化方式（"batch" | "group"），mlp / cnn 不含归一化、忽略此参数。
+    norm: deepcnn / resnet / mobilenet / squeezenet 的归一化方式（"batch" | "group"），
+        mlp / cnn 不含归一化、忽略此参数。
     """
     dataset = dataset.lower()
     in_channels = channels if channels else (1 if dataset == "mnist" else 3)
@@ -193,4 +321,11 @@ def build_model(name="cnn", dataset="mnist", channels=None, norm="group"):
         return DeepCNN(in_channels, num_classes, input_size, norm=norm)
     if name == "resnet":
         return ResNet(in_channels, num_classes, norm=norm)
-    raise ValueError(f"未知模型: {name}（可选 'mlp' | 'cnn' | 'deepcnn' | 'resnet'）")
+    if name == "mobilenet":
+        return MobileNet(in_channels, num_classes, norm=norm)
+    if name == "squeezenet":
+        return SqueezeNet(in_channels, num_classes, norm=norm)
+    raise ValueError(
+        f"未知模型: {name}"
+        "（可选 'mlp' | 'cnn' | 'deepcnn' | 'resnet' | 'mobilenet' | 'squeezenet'）"
+    )

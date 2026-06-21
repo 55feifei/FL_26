@@ -5,7 +5,9 @@
 >
 > **发挥部分**额外实现了：① Non-IID & 样本不均衡对 FedAvg 的系统性研究（单机仿真，6 个对比场景）；
 > ② 扩展至 **CIFAR-10 彩色数据集 + 更深层网络（DeepCNN / ResNet-20）** 的联邦训练，并探讨
-> 联邦场景下 **GroupNorm 替代 BatchNorm** 的关键实现差异。
+> 联邦场景下 **GroupNorm 替代 BatchNorm** 的关键实现差异；
+> ③ 网络模型优化：**MobileNet（深度可分离卷积）/ SqueezeNet（Fire 模块）** 两种轻量化网络与
+> 普通 CNN 的训练效率对比（参数量、模型大小、每轮耗时、收敛速度）。
 
 ---
 
@@ -20,9 +22,10 @@
 7. [输出结果说明](#7-输出结果说明)
 8. [发挥部分：Non-IID 与样本不均衡研究](#8-发挥部分non-iid-与样本不均衡研究)
 9. [发挥部分：CIFAR-10 + 深层网络（DeepCNN / ResNet）](#9-发挥部分cifar-10--深层网络deepcnn--resnet)
-10. [常见问题排查](#10-常见问题排查)
-11. [对应任务书要求](#11-对应任务书要求)
-12. [快速参考卡（所有场景）](#快速参考卡所有场景)
+10. [发挥部分：轻量化网络对比（MobileNet / SqueezeNet）](#10-发挥部分轻量化网络对比mobilenet--squeezenet)
+11. [常见问题排查](#11-常见问题排查)
+12. [对应任务书要求](#12-对应任务书要求)
+13. [快速参考卡（所有场景）](#快速参考卡所有场景)
 
 ---
 
@@ -71,7 +74,7 @@ $$W_{global} = \sum_{k=1}^{K} \frac{n_k}{\sum n} \cdot W_k$$
 FL_26/
 ├── common/                     # 公共模块（服务器与客户端共享）
 │   ├── config.py               #   超参数 Config 数据类
-│   ├── model.py                #   MLP / SimpleCNN / DeepCNN / ResNet-20 模型 + norm_layer
+│   ├── model.py                #   MLP / SimpleCNN / DeepCNN / ResNet-20 / MobileNet / SqueezeNet + norm_layer
 │   ├── data.py                 #   MNIST/CIFAR-10 加载(load_dataset) + 四种联邦分片方法
 │   │                           #     partition_iid()              IID 等分
 │   │                           #     partition_noniid()           McMahan shard 法
@@ -90,6 +93,7 @@ FL_26/
 │
 ├── scripts/
 │   ├── simulate_noniid.py      # ★新增 Non-IID 研究仿真脚本（6 场景对比）
+│   ├── compare_lightweight.py  # ★新增 轻量化网络对比脚本（CNN/MobileNet/SqueezeNet）
 │   ├── prepare_data.py         # 预下载 MNIST / CIFAR-10 到本地（prepare_data.py cifar10）
 │   ├── predict.py              # 加载全局模型推理 + 评估
 │   ├── train_local.py          # 树莓派本地单机训练健康检查
@@ -609,7 +613,109 @@ python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 \
 
 ---
 
-## 10. 常见问题排查
+## 10. 发挥部分：轻量化网络对比（MobileNet / SqueezeNet）
+
+### 10.1 研究目标
+
+任务书发挥部分（3）要求：**对比研究轻量化网络（如 MobileNet、SqueezeNet）与普通卷积网络（CNN）在树莓派硬件资源受限条件下的训练效率差异**。
+
+树莓派属于典型资源受限边缘端（armv7l 32 位、单核或四核 ARM、内存 ≤ 4 GB），普通深层 CNN 在其上训练既慢又费内存。轻量化网络通过**结构创新**降低计算/参数量，是边缘 FL 的天然选择：
+
+- **MobileNet** —— 用「3×3 深度卷积 (groups=cin) + 1×1 逐点卷积」近似标准 3×3 卷积，把每层乘加从 D²·Cin·Cout 降到 D²·Cin + Cin·Cout，参数大幅减少。
+- **SqueezeNet** —— 用 Fire 模块：先 1×1 squeeze 压通道，再用 1×1 与 3×3 两支 expand 并行扩张；分类头用 1×1 conv + 全局池化替代 FC，进一步压参数。
+
+本研究在同一 FedAvg 框架下加入这两种网络，与现有 `SimpleCNN` 在 MNIST 上做**参数量 / 通信开销 / 单轮训练耗时 / 收敛速度**四维对比。
+
+### 10.2 新增的两个轻量化模型（均在 [common/model.py](common/model.py)）
+
+| 模型名 | 关键技巧 | 结构概览 | 参数量 (MNIST 3-ch, GroupNorm) |
+|--------|---------|---------|--------------------------------|
+| `cnn` | 普通 3×3 卷积（基准） | 2 卷积 + 2 FC | ≈ 207 k |
+| `mobilenet` | **深度可分离卷积（DW + PW）**，宽度系数 0.5 | 1 stem conv + 7 DW-sep 块 + GAP + FC | ≈ 142 k |
+| `squeezenet` | **Fire 模块**（squeeze 1×1 + expand 1×1‖3×3） | 1 stem conv + 6 Fire + 1×1 投影 + GAP | ≈ 342 k |
+
+> 两个新模型都通过 `norm_layer()` 选择 GroupNorm/BatchNorm，默认 `--norm group`（与 §9 论证一致，FL 友好）。三端的 `--model / --channels / --norm` 必须保持一致。
+
+### 10.3 单机对比仿真（推荐先在 PC 上跑）
+
+[scripts/compare_lightweight.py](scripts/compare_lightweight.py) 在一台机器上模拟 2 客户端 FedAvg 闭环，对 3 个模型并排训练 MNIST，记录每模型的参数量、模型字节数、每轮 wall-clock 耗时与每轮全局准确率/损失。
+
+```bash
+# 默认：cnn + mobilenet + squeezenet，15 轮（约 5–10 分钟，看 PC 性能）
+python scripts/compare_lightweight.py
+
+# 模拟 Pi 单核负载（强烈推荐，让"耗时"指标可类比 Pi 真机）
+python scripts/compare_lightweight.py --threads 1 --rounds 15
+
+# 快速验证（5 轮、每轮 30 batch，2–3 分钟）
+python scripts/compare_lightweight.py --rounds 5 --local-steps 30 --threads 1
+
+# 仅跑指定模型
+python scripts/compare_lightweight.py --models cnn mobilenet
+```
+
+**Windows PowerShell 版**（单行）：
+
+```powershell
+& "F:\ANACONDA\envs\FL\python.exe" scripts\compare_lightweight.py --threads 1 --rounds 15
+```
+
+### 10.4 真机部署：在 2 台树莓派上单独跑某个轻量化模型
+
+三端用一致的 `--model mobilenet`（或 `squeezenet`） + `--channels 3` 即可走通完整闭环，与跑 CNN 的命令模板完全相同，结果落到 `results/mnist_mobilenet_group/`（或 `_squeezenet_group/`）子目录互不覆盖。
+
+```bash
+# PC 端：服务器
+python -m server.fl_server --rounds 15 --num-clients 2 \
+    --model mobilenet --channels 3 --norm group
+
+# 树莓派 #1（armv7l 推荐 --threads 1 + --local-steps 40 控时）
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 0 --num-clients 2 \
+    --model mobilenet --channels 3 --norm group \
+    --threads 1 --local-steps 40 --seed 42
+
+# 树莓派 #2（同上，--client-id 改 1）
+```
+
+> 把 `--model mobilenet` 改成 `--model squeezenet` 即可换 SqueezeNet。  
+> 训练完成后 `python scripts/predict.py` 会自动找到最新模型并重建评估（无需指定模型名，依赖 checkpoint 内置元信息）。
+
+### 10.5 输出文件
+
+`results/lightweight_compare/` 下：
+
+| 文件 | 说明 |
+|------|------|
+| `{model}.csv` | 每轮 `round, accuracy, loss, round_sec`（每个模型一个文件） |
+| `summary.csv` | 汇总对比表：参数量、模型大小(KB)、每轮平均耗时、总耗时、最终准确率、达 90% 轮次 |
+| `efficiency.png` | 2×2 子图：① 参数量 ② 模型大小 ③ 每轮耗时 柱状图 + ④ 准确率收敛曲线 |
+| `convergence.png` | 准确率 vs 累计训练秒数曲线（直观回答"同等时间预算下谁更强"） |
+
+控制台同时打印一份 ASCII 汇总表，类似：
+
+```
+══════════════════════════════════════════════════════════════
+  轻量化网络 vs 普通 CNN — 训练效率对比汇总（MNIST）
+══════════════════════════════════════════════════════════════
+  模型                          参数量      模型大小(KB)    每轮平均(s)     总耗时(s)     最终准确率    达90%轮次
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  SimpleCNN（基准）              207,210     736.4           x.xx            xx.x          0.xxxx        xx
+  MobileNet（深度可分离卷积）     141,994     505.4           x.xx            xx.x          0.xxxx        xx
+  SqueezeNet（Fire 模块）        341,962     1229.8          x.xx            xx.x          0.xxxx        xx
+══════════════════════════════════════════════════════════════
+```
+
+### 10.6 预期结论方向（实验趋势）
+
+- **参数量与通信开销**：MobileNet（width=0.5）参数最少（约 142 k），FedAvg 每轮上下行的字节数比 SimpleCNN 少约 30%；SqueezeNet 参数多于 SimpleCNN，但其结构以 1×1 卷积为主、推理 FLOPs 仍占优——本研究主要关注训练侧，故以"模型大小"作为通信开销代理。
+- **每轮训练耗时**：在 PC 多核上 MobileNet 单轮通常略慢于 SimpleCNN（因为 PyTorch 在 CPU 上**深度可分离卷积的优化弱于普通 conv2d**——分组卷积的内存访问模式对 SIMD/缓存不友好）。**这正是本研究的重要发现**：在 Pi armv7l 这类没有专门 DW conv 加速指令的硬件上，「参数少 ≠ 单轮快」，参数压缩的真正收益是**通信带宽与模型体积**，而非裸训练速度。建议报告里明确指出这一反直觉现象。
+- **MNIST 收敛**：MNIST 太简单，三种模型最终都能达到 ~98%+，区别更多体现在"达到目标精度所需轮次/秒数"上，而非"最终精度上限"。
+- **`--threads 1` 的意义**：把 PC 的 PyTorch 线程数压到 1 可近似 Pi 单核口径，让 PC 仿真出的耗时排序与 Pi 真机一致，避免出现「PC 上 MobileNet 比 CNN 快、Pi 上反过来」的口径错位。
+
+---
+
+## 11. 常见问题排查
 
 **Q1. 树莓派 torch 安装失败？**
 
@@ -671,7 +777,7 @@ python -c "import matplotlib; print(matplotlib.get_cachedir())"
 
 ---
 
-## 11. 对应任务书要求
+## 12. 对应任务书要求
 
 ### 基础部分
 
@@ -694,6 +800,7 @@ python -c "import matplotlib; print(matplotlib.get_cachedir())"
 | **扩展彩色数据集 CIFAR-10** | `load_cifar10` + `load_dataset` 统一入口，含数据增强（见第 9 节） |
 | **更深层网络的联邦训练** | DeepCNN（6 卷积层）/ ResNet-20（残差，约 20 层），三端 `--model` 选择 |
 | **联邦归一化差异（GroupNorm）** | `--norm group/batch` 可配置，默认 GroupNorm，附 BN-vs-GN 对照实验 |
+| **轻量化网络（MobileNet / SqueezeNet）对比** | 新增 `mobilenet` / `squeezenet` 模型 + `compare_lightweight.py` 单机仿真对比脚本（见第 10 节） |
 
 ---
 
@@ -872,13 +979,47 @@ python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
 
 ---
 
+### 场景 H — 发挥部分·轻量化网络对比（MobileNet / SqueezeNet vs CNN）
+
+**单机仿真**（一条命令并排跑完 3 个模型，输出参数量/模型大小/每轮耗时/收敛曲线）：
+
+```bash
+# 默认 15 轮，模拟 Pi 单核（强烈推荐 --threads 1）
+python scripts/compare_lightweight.py --threads 1 --rounds 15
+
+# 快速验证（约 2–3 分钟）
+python scripts/compare_lightweight.py --rounds 5 --local-steps 30 --threads 1
+```
+
+**真机部署**（在 PC + 2 台树莓派上单独跑某个轻量化模型）：
+
+```bash
+# 服务器（终端 1）：把 mobilenet 换成 squeezenet 即可切换
+python -m server.fl_server --rounds 15 --num-clients 2 \
+    --model mobilenet --channels 3 --norm group
+
+# 两台树莓派
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 0 --num-clients 2 --model mobilenet --channels 3 --norm group \
+    --threads 1 --local-steps 40 --seed 42
+python3 -m client.fl_client --server http://<PC_IP>:5000 \
+    --client-id 1 --num-clients 2 --model mobilenet --channels 3 --norm group \
+    --threads 1 --local-steps 40 --seed 42
+```
+
+输出在 `results/lightweight_compare/`（仿真）或 `results/mnist_mobilenet_group/`（真机）。详见第 10 节。
+
+---
+
 ### 工具脚本
 
 ```bash
-python scripts/predict.py            # 加载全局模型，在测试集评估 + 展示样例预测
-python scripts/check_torch.py        # 检测 PyTorch 版本与基本能力（在树莓派上运行）
-python scripts/check_data.py         # 验证各客户端数据分片结果（样本数、类别分布）
-python scripts/test_3channel.py      # 对比 1 vs 3 通道 CNN 在本机的表现（定位 armv7l bug）
-python scripts/diagnose_forward.py   # 前向传播逐层 NaN/Inf 诊断
-python scripts/stress_conv.py        # 卷积层压力测试（armv7l bug 定位）
+python scripts/predict.py              # 加载全局模型，在测试集评估 + 展示样例预测
+python scripts/simulate_noniid.py      # Non-IID & 不均衡 6 场景单机仿真（发挥任务）
+python scripts/compare_lightweight.py  # CNN vs MobileNet vs SqueezeNet 训练效率对比（发挥任务三）
+python scripts/check_torch.py          # 检测 PyTorch 版本与基本能力（在树莓派上运行）
+python scripts/check_data.py           # 验证各客户端数据分片结果（样本数、类别分布）
+python scripts/test_3channel.py        # 对比 1 vs 3 通道 CNN 在本机的表现（定位 armv7l bug）
+python scripts/diagnose_forward.py     # 前向传播逐层 NaN/Inf 诊断
+python scripts/stress_conv.py          # 卷积层压力测试（armv7l bug 定位）
 ```
