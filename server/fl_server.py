@@ -250,14 +250,25 @@ def main():
     ap.add_argument("--norm", default="group", choices=["batch", "group"],
                     help="deepcnn/resnet 归一化（须与客户端一致）：group(FL 推荐，对 Non-IID 鲁棒) | batch")
     ap.add_argument("--data-dir", default="./data")
-    ap.add_argument("--results-dir", default="./results")
+    ap.add_argument("--results-dir", default="./results",
+                    help="产物根目录；默认会在其下按实验名建子目录 {dataset}_{model}[_{norm}]")
+    ap.add_argument("--flat-results", action="store_true",
+                    help="关闭按实验名建子目录，直接写到 --results-dir 根目录（旧行为）")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
+
+    # 默认按实验名建子目录，避免不同数据集/模型互相覆盖 global_model.pth / metrics.csv / curves.png
+    results_dir = args.results_dir
+    if not args.flat_results:
+        tag = f"{args.dataset}_{args.model}"
+        if args.model in ("deepcnn", "resnet"):
+            tag += f"_{args.norm}"
+        results_dir = os.path.join(args.results_dir, tag)
 
     cfg = Config(
         num_clients=args.num_clients, rounds=args.rounds, model=args.model,
         channels=args.channels, dataset=args.dataset, norm=args.norm, data_dir=args.data_dir,
-        results_dir=args.results_dir, seed=args.seed, host=args.host, port=args.port,
+        results_dir=results_dir, seed=args.seed, host=args.host, port=args.port,
     )
 
     global server
@@ -267,6 +278,7 @@ def main():
     norm_info = f"  归一化={cfg.norm}" if cfg.model in ("deepcnn", "resnet") else ""
     print(f"联邦学习服务器已启动：模型={cfg.model}  数据集={cfg.dataset}{norm_info}")
     print(f"等待 {cfg.num_clients} 个客户端，共进行 {cfg.rounds} 轮 FedAvg")
+    print(f"产物目录：{os.path.abspath(cfg.results_dir)}  （模型/指标/曲线均存此）")
     print(f"看板地址：http://127.0.0.1:{cfg.port}/  （局域网用本机 IP 替换 127.0.0.1）")
     print("=" * 48, flush=True)
     app.run(host=cfg.host, port=cfg.port, threaded=True)

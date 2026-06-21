@@ -90,7 +90,7 @@ FL_26/
 │
 ├── scripts/
 │   ├── simulate_noniid.py      # ★新增 Non-IID 研究仿真脚本（6 场景对比）
-│   ├── prepare_data.py         # 预下载 MNIST 到本地
+│   ├── prepare_data.py         # 预下载 MNIST / CIFAR-10 到本地（prepare_data.py cifar10）
 │   ├── predict.py              # 加载全局模型推理 + 评估
 │   ├── train_local.py          # 树莓派本地单机训练健康检查
 │   ├── check_data.py           # 验证数据分片结果
@@ -104,12 +104,15 @@ FL_26/
 │   └── run_client.sh           # 树莓派一键启动客户端
 │
 ├── data/                       # 数据集（运行时自动创建）
-│   └── MNIST/raw/
+│   ├── MNIST/raw/
+│   └── cifar-10-batches-py/    #   CIFAR-10（解压后）
 │
-├── results/                    # 运行产物（运行时自动创建）
-│   ├── global_model.pth        #   最新全局模型 checkpoint
-│   ├── metrics.csv             #   每轮 accuracy / loss / 耗时
-│   ├── curves.png              #   训练曲线图
+├── results/                    # 运行产物（运行时自动创建，按实验名分子目录）
+│   ├── mnist_mlp/              #   {dataset}_{model}[_{norm}]，不同实验互不覆盖
+│   │   ├── global_model.pth    #     最新全局模型 checkpoint
+│   │   ├── metrics.csv         #     每轮 accuracy / loss / 耗时
+│   │   └── curves.png          #     训练曲线图
+│   ├── cifar10_resnet_group/   #   例：CIFAR-10 + ResNet-20 + GroupNorm 的产物
 │   └── noniid_research/        #   Non-IID 研究专用输出目录 ★新增
 │       ├── iid_balanced.csv
 │       ├── noniid_dir05.csv
@@ -293,8 +296,11 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 | `--dataset` | `mnist` | `mnist` / `cifar10` |
 | `--norm` | `group` | deepcnn/resnet 归一化：`group`(FL 推荐) / `batch` |
 | `--data-dir` | `./data` | 数据集存放路径 |
-| `--results-dir` | `./results` | 输出目录 |
+| `--results-dir` | `./results` | 产物根目录（默认在其下按实验名建子目录） |
+| `--flat-results` | 关 | 加上则关闭子目录，直接写 `--results-dir` 根目录（旧行为） |
 | `--seed` | `42` | 随机种子 |
+
+> 📁 **产物自动分目录**：服务器默认把模型/指标/曲线存到 `results/{dataset}_{model}[_{norm}]/`（如 `results/cifar10_resnet_group/`、`results/mnist_mlp/`），不同数据集/模型/归一化的结果**互不覆盖**。启动时会打印实际产物目录。想回到旧的扁平布局加 `--flat-results`。
 
 ### 客户端 `python3 -m client.fl_client`
 
@@ -327,20 +333,23 @@ python3 -m client.fl_client --server http://<PC_IP>:5000 \
 
 ## 7. 输出结果说明
 
-所有产物在 `results/`（由服务器/PC 生成）：
+所有产物默认存到**按实验名分的子目录** `results/{dataset}_{model}[_{norm}]/`（由服务器/PC 生成；启动时打印实际路径）。以 `results/cifar10_resnet_group/` 为例：
 
 | 文件 | 说明 |
 |------|------|
-| `results/global_model.pth` | 最新全局模型 checkpoint，含 `{state_dict, model, dataset, channels, norm, round, accuracy}` |
-| `results/metrics.csv` | 每轮 `round, accuracy, loss, elapsed_sec` |
-| `results/curves.png` | 训练完成后自动生成的准确率/损失曲线 |
+| `…/global_model.pth` | 最新全局模型 checkpoint，含 `{state_dict, model, dataset, channels, norm, round, accuracy}` |
+| `…/metrics.csv` | 每轮 `round, accuracy, loss, elapsed_sec` |
+| `…/curves.png` | 训练完成后自动生成的准确率/损失曲线 |
 | 网页看板 `:5000/` | 实时轮次、准确率/损失曲线、各客户端状态 |
+
+> 不同数据集/模型/归一化各自独立成目录，互不覆盖。加 `--flat-results` 可退回旧的扁平布局（直接写 `results/`）。
 
 **加载并使用训练好的模型**：
 
 ```bash
-# 在测试集评估 + 展示样例预测
+# 不带参数会自动在 results/ 下找最新的模型评估；也可指定具体路径
 python scripts/predict.py
+python scripts/predict.py results/cifar10_resnet_group/global_model.pth
 ```
 
 ```python
@@ -555,6 +564,27 @@ python3 -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 \
 
 # 换更深的 ResNet-20：三端把 --model deepcnn 改为 --model resnet 即可
 ```
+
+**Windows PowerShell 版（单行，本机直接复制可用）** —— PowerShell 续行符是反引号而非 `\`，且需用 FL 环境的 python.exe，故统一写成单行：
+
+```powershell
+# 进入 fl 目录
+cd f:\硬件课程设计\FL\fl
+
+# 1. 下载/解压 CIFAR-10（仅首次）
+& "F:\ANACONDA\envs\FL\python.exe" scripts\prepare_data.py cifar10
+
+# 2. 终端 1 —— 服务器（ResNet-20 + GroupNorm，30 轮）
+& "F:\ANACONDA\envs\FL\python.exe" -m server.fl_server --dataset cifar10 --model resnet --channels 3 --norm group --rounds 30 --num-clients 2
+
+# 3. 终端 2 —— 客户端 0
+& "F:\ANACONDA\envs\FL\python.exe" -m client.fl_client --server http://127.0.0.1:5000 --client-id 0 --dataset cifar10 --model resnet --channels 3 --norm group --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
+
+# 4. 终端 3 —— 客户端 1（仅 --client-id 改为 1）
+& "F:\ANACONDA\envs\FL\python.exe" -m client.fl_client --server http://127.0.0.1:5000 --client-id 1 --dataset cifar10 --model resnet --channels 3 --norm group --num-clients 2 --lr 0.05 --batch-size 64 --local-epochs 2
+```
+
+> 用 DeepCNN 就把三处 `--model resnet` 改成 `--model deepcnn`。想快速验证别等 30 轮：服务器加 `--rounds 3`、客户端加 `--local-steps 50`。
 
 > ⚠ **三端一致**：`--dataset cifar10 --model <deepcnn|resnet> --channels 3 --norm <group|batch>` 必须在服务器与所有客户端完全相同。CIFAR-10 为彩色三通道，`--channels` 必须为 3。
 
