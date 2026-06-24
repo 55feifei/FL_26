@@ -24,6 +24,11 @@ data/
 results/*
 !results/.gitkeep
 
+# ===== 测试/临时目录 =====
+test/
+test0/
+test1/
+
 # ===== 日志/临时文件 =====
 *.log
 *.tmp

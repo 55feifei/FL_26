@@ -11,6 +11,12 @@
   python3 scripts/train_local.py                       # 默认 mlp+cnn 快速训练
   python3 scripts/train_local.py --model cnn           # 只测 CNN
   python3 scripts/train_local.py --epochs 2 --max-batches 0   # 跑满整个 epoch（更慢更准）
+
+  # 复刻 FL 真机配置脱离联邦单测轻量化网络（与 fl_client 同样 --channels/--threads/--norm）：
+  python3 scripts/train_local.py --model mobilenet  --channels 3 --threads 1
+  python3 scripts/train_local.py --model squeezenet --channels 3 --threads 1
+  # 对比：深度卷积坏(mobilenet 学不动) vs 标准卷积好(squeezenet/cnn 正常收敛)
+  #       即可在本机坐实是 armv7l 的「分组/深度卷积」路径有问题。
 """
 
 import os
@@ -29,7 +35,7 @@ from common.data import load_mnist, make_loader
 
 def train_and_eval(model_name, train_loader, test_loader, args, device):
     print(f"\n===== 训练模型: {model_name} =====", flush=True)
-    model = build_model(model_name, "mnist").to(device)
+    model = build_model(model_name, "mnist", channels=args.channels, norm=args.norm).to(device)
     opt = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
     crit = torch.nn.CrossEntropyLoss()
 
@@ -44,7 +50,7 @@ def train_and_eval(model_name, train_loader, test_loader, args, device):
             loss.backward()
             opt.step()
             lv = loss.item()
-            if i % 50 == 0:
+            if i % 5 == 0:
                 print(f"  epoch {ep + 1} batch {i:4d}  loss={lv:.4f}", flush=True)
             if not math.isfinite(lv):
                 print(f"  !! batch {i} loss={lv}（NaN/Inf）—— 本机 {model_name} 训练异常", flush=True)
@@ -73,7 +79,15 @@ def train_and_eval(model_name, train_loader, test_loader, args, device):
 
 def main():
     ap = argparse.ArgumentParser(description="本地训练 MNIST 验证 PyTorch 是否正常")
-    ap.add_argument("--model", default="both", choices=["mlp", "cnn", "both"])
+    ap.add_argument("--model", default="both",
+                    choices=["mlp", "cnn", "deepcnn", "resnet", "mobilenet", "squeezenet", "both"],
+                    help="both=mlp+cnn 对照；其余为单模型（含轻量化 mobilenet/squeezenet）")
+    ap.add_argument("--channels", type=int, default=1, choices=[1, 3],
+                    help="输入通道；armv7l 上设 3 把 MNIST 复制为三通道，与 fl_client 保持一致")
+    ap.add_argument("--norm", default="group", choices=["batch", "group"],
+                    help="deepcnn/resnet/mobilenet/squeezenet 的归一化方式（与 fl_client 一致）")
+    ap.add_argument("--threads", type=int, default=0,
+                    help=">0 时设置 torch 线程数；armv7l conv 偶发 NaN 时可设 1")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-batches", type=int, default=200,
                     help=">0 时每个 epoch 只训这么多 batch（控时）；0=跑满整个 epoch")
@@ -82,12 +96,15 @@ def main():
     ap.add_argument("--data-dir", default="./data")
     args = ap.parse_args()
 
+    if args.threads and args.threads > 0:
+        torch.set_num_threads(args.threads)
+
     device = torch.device("cpu")
     print(f"torch={torch.__version__}  线程={torch.get_num_threads()}  device=cpu  "
-          f"max_batches={args.max_batches or '满epoch'}")
+          f"channels={args.channels}  norm={args.norm}  max_batches={args.max_batches or '满epoch'}")
 
-    train_set = load_mnist(args.data_dir, train=True, download=True)
-    test_set = load_mnist(args.data_dir, train=False, download=True)
+    train_set = load_mnist(args.data_dir, train=True, download=True, channels=args.channels)
+    test_set = load_mnist(args.data_dir, train=False, download=True, channels=args.channels)
     train_loader = make_loader(train_set, args.batch_size, shuffle=True)
     test_loader = make_loader(test_set, 256, shuffle=False)
 

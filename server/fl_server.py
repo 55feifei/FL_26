@@ -49,6 +49,8 @@ class FLServer:
 
         self.current_round = 1          # 当前进行中的轮次（从 1 开始）
         self.done = False               # 是否已完成全部轮次
+        self.best_accuracy = -1.0       # 历史最高准确率（用于保留最优模型权重）
+        self.best_round = 0             # 取得最高准确率的轮次
         self.round_updates = {}         # 本轮已收到的更新 {client_id: (state_dict, n)}
         self.history = []               # [{round, accuracy, loss, time}]
         self.clients = {}               # {client_id: {last_round, num_samples, last_seen}}
@@ -146,10 +148,19 @@ class FLServer:
                 acc, loss = self.evaluate()
                 self._record(self.current_round, acc, loss)
                 model_path = self.save_model()   # 每轮覆盖保存最新全局模型（早停也有最新模型）
+                # 若刷新历史最高准确率，则额外保留一份最优模型权重
+                if acc > self.best_accuracy:
+                    self.best_accuracy = acc
+                    self.best_round = self.current_round
+                    best_path = self.save_model(best=True)
+                    print(f"  ★ 新的最佳模型：准确率={acc:.4f}（第 {self.current_round} 轮）"
+                          f"已保存到 {best_path}", flush=True)
                 if self.current_round >= self.cfg.rounds:
                     self.done = True
                     self.plot_curves()
                     print(f"最终全局模型已保存：{model_path}", flush=True)
+                    print(f"最佳全局模型（第 {self.best_round} 轮，准确率={self.best_accuracy:.4f}）"
+                          f"已保存：{os.path.join(self.cfg.results_dir, 'best_model.pth')}", flush=True)
                     print("==== 训练完成 ====", flush=True)
                 else:
                     self.current_round += 1
@@ -158,9 +169,14 @@ class FLServer:
                     "current_round": self.current_round, "done": self.done}
 
     # ---------- 保存全局模型 ----------
-    def save_model(self):
-        """保存当前全局模型为 checkpoint（含元信息，便于后续加载推理）。"""
-        path = os.path.join(self.cfg.results_dir, "global_model.pth")
+    def save_model(self, best=False):
+        """保存当前全局模型为 checkpoint（含元信息，便于后续加载推理）。
+
+        best=False：每轮覆盖保存 global_model.pth（最新模型）；
+        best=True ：另存 best_model.pth（历史准确率最高的一版权重，不被后续较差的轮次覆盖）。
+        """
+        fname = "best_model.pth" if best else "global_model.pth"
+        path = os.path.join(self.cfg.results_dir, fname)
         last = self.history[-1] if self.history else {}
         torch.save({
             "state_dict": self.model.state_dict(),
@@ -246,6 +262,8 @@ def status():
             "dataset": server.cfg.dataset,
             "partition": server.partition_desc,
             "num_clients": server.cfg.num_clients,
+            "best_accuracy": None if server.best_accuracy < 0 else round(server.best_accuracy, 4),
+            "best_round": server.best_round,
             "history": server.history,
             "clients": server.clients,
         })
